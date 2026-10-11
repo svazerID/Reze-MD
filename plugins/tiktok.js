@@ -21,14 +21,12 @@ module.exports = {
 
             let data = json.data
             let caption = [
-                `*🎬 TikTok Downloader*`,
-                ``,
-                `📝 ${data.title || '-'}`,
-                `👤 @${data.author?.username || 'unknown'} (${data.author?.nickname || '-'})`,
+                `${data.title || '-'}`
+               /* `👤 @${data.author?.username || 'unknown'} (${data.author?.nickname || '-'})`,
                 `❤️ ${(data.like || 0).toLocaleString()} likes`,
                 `👁️ ${(data.views || 0).toLocaleString()} views`,
                 `💬 ${(data.comment || 0).toLocaleString()} comments`,
-                `⏱️ ${data.duration || '-'}`
+                `⏱️ ${data.duration || '-'}` */
             ].join('\n')
 
             let tmpDir = path.join(__dirname, '..', 'tmp')

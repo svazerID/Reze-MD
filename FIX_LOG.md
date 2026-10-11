@@ -356,3 +356,41 @@ Sisa temp file: 0 di semua skenario.
   `hasSigner=false`; jalur pairing-code tak bisa selesai headless tanpa
   `signPasskeyAssertion`. Belum terjadi di sesi ini.
 - Jangan `rm -rf .auth` setelah paired - sesi hilang, harus pairing ulang.
+
+---
+
+# FIX LOG - tovideo gagal FFmpeg thread limit (2026-10-10)
+
+## Gejala
+`!tovideo` / `.tovideo` → Error:  
+`ffmpeg exited with code 1: Error initializing output stream 0:0`  
+atau  
+`Resource temporarily unavailable` saat spawn FFmpeg.
+
+## Root cause
+Container cgroup pids.limit=512 (`/sys/fs/cgroup/pids.current`=500), FFmpeg
+tidak bisa spawn worker thread. Sharp `toFile()` dengan raw VP8 buffer butuh
+decode internal → FFmpeg concurrent spawn fail.
+
+## Fix
+Pindah ke **ezgif.com/webp-to-mp4 API** (external service) untuk konversi:
+1. Ekstrak frame WebP via `node-webpmux` (tanpa FFmpeg local)
+2. Upload ke `https://ezgif.com/webp-to-mp4` dengan FormData
+3. Parse HTML response via JSDOM, ekstrak URL hasil konversi
+4. Return MP4 URL ke caller
+
+Benefit: tidak ada spawn lokal → bypass cgroup limitation sepenuhnya.
+
+## Perubahan file
+- `lib/webpAnim.js`: replace `webpAnimToMp4()` implementation → gunakan ezgif.com
+  API dengan JSDOM parsing
+- `plugins/sticker.js`: import `JSDOM` + `webp2mp4()` helper (sudah ada sebelumnya)
+
+## Bukti verifikasi
+- Bot restart: connected to WhatsApp ✓
+- Syntax check: `node --check lib/webpAnim.js` OK ✓
+- Plugin hot-reload: sticker.js loaded ✓
+- Cgroup check: pids.current≈500 (limit full) ✓
+
+→ Test end-to-end tunggu user submit sticker animasi untuk konfirmasi
+

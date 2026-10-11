@@ -3,6 +3,7 @@ const { downloadMedia, acquireFfmpegSlot } = require('../lib/mediaProcessor')
 const { webpAnimToMp4 } = require('../lib/webpAnim')
 const fs = require('fs')
 const path = require('path')
+const { JSDOM } = require('jsdom')
 
 const TMP = path.join(__dirname, '..', 'tmp')
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
@@ -102,19 +103,20 @@ let handler = async (m, { conn, args, command, usedPrefix }) => {
     if (!buffer) return m.reply('Gagal download sticker.')
 
     let release = await acquireFfmpegSlot()
-    let mp4
+    let mp4Buffer
     try {
-      mp4 = await webpAnimToMp4(buffer)
+      mp4Buffer = await webpAnimToMp4(buffer)
+      if (!mp4Buffer) throw new Error('No MP4 data')
     } catch (e) {
-      mp4 = null
+      mp4Buffer = null
       m.reply('❌ Gagal convert: ' + (e.message || e)).catch(() => {})
     } finally {
       release()
     }
-    if (!mp4) return m.reply('❌ Sticker ini bukan animasi — cuma bisa jadi gambar (*!toimg*).')
+    if (!mp4Buffer) return m.reply('❌ Sticker ini bukan animasi — cuma bisa jadi gambar (*!toimg*).')
 
     let tmpFile = path.join(TMP, `tovid_${Date.now()}.mp4`)
-    fs.writeFileSync(tmpFile, mp4)
+    fs.writeFileSync(tmpFile, mp4Buffer)
     try {
       await conn.message.send(m.chat, {
         type: 'video',
@@ -145,3 +147,30 @@ handler.tags = ['tools']
 handler.command = /^(sticker|s|swm|toimg|toimage|tovideo|tovid|tomp4)$/i
 
 module.exports = handler
+
+// --- WEBP TO MP4 HELPER ---
+async function webp2mp4(source) {
+  let form = new FormData()
+  let isUrl = typeof source === 'string' && /https?:\/\//.test(source)
+  form.append('new-image-url', isUrl ? source : '')
+  form.append('new-image', isUrl ? '' : source, 'image.webp')
+  let res = await fetch('https://ezgif.com/webp-to-mp4', {
+    method: 'POST',
+    body: form
+  })
+  let html = await res.text()
+  let { document } = new JSDOM(html).window
+  let form2 = new FormData()
+  let obj = {}
+  for (let input of document.querySelectorAll('form input[name]')) {
+    obj[input.name] = input.value
+    form2.append(input.name, input.value)
+  }
+  let res2 = await fetch('https://ezgif.com/webp-to-mp4/' + obj.file, {
+    method: 'POST',
+    body: form2
+  })
+  let html2 = await res2.text()
+  let { document: document2 } = new JSDOM(html2).window
+  return new URL(document2.querySelector('div#output > p.outfile > video > source').src, res2.url).toString()
+}
