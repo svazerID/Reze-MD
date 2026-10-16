@@ -18,6 +18,8 @@ handler.help = ['tagall <pesan>']
 handler.tags = ['group']
 handler.command = /^(tagall|tagsemua)$/i
 handler.group = true
+handler.admin = true
+handler.botAdmin = true
 handler.participants = true
 
 module.exports = handler

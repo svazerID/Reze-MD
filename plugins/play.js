@@ -2,23 +2,72 @@ let fs = require('fs')
 let path = require('path')
 let { execFile } = require('child_process')
 
-let API = 'https://api.alfisy.my.id/api'
 let TMP = path.join(__dirname, '..', 'tmp')
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 
-// SAMA PERSIS dengan perintah fetch yang sudah terbukti berhasil:
-// plain fetch + User-Agent saja. Tanpa AbortSignal, tanpa header tambahan,
+// yt-dlp: binary persisten di /home/hatch/bin, fallback ke PATH (mis. di Termux)
+let YTDLP = fs.existsSync('/home/hatch/bin/yt-dlp') ? '/home/hatch/bin/yt-dlp' : 'yt-dlp'
+// YouTube nge-block IP datacenter ("Sign in to confirm you're not a bot").
+// player_client=android lolos dari bot-check, tapi cuma nyediain format 18
+// (360p mp4 + audio) → audio diekstrak ke mp3 pakai ffmpeg.
+let EXTRACTOR_ARGS = 'youtube:player_client=android'
+
+// Untuk download thumbnail saja. Tanpa AbortSignal, tanpa header tambahan,
 // tanpa opsi redirect — kombinasi itulah yang memicu "terminated" di undici.
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms))
 
-async function apiGet(pathname, params) {
-  let url = new URL(API + pathname)
-  for (let [k, v] of Object.entries(params)) url.searchParams.set(k, v)
-  let res = await fetch(url, { headers: { 'User-Agent': UA } })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return await res.json()
+function runYtDlp(args, timeoutSec) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      YTDLP,
+      args,
+      { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024, timeout: timeoutSec * 1000 },
+      (err, stdout, stderr) => {
+        if (err) {
+          let msg = (stderr || '').trim().split('\n').filter(Boolean).pop() || err.message
+          return reject(new Error(msg))
+        }
+        resolve(stdout)
+      }
+    )
+  })
+}
+
+// Cari via yt-dlp, tanpa API lagi
+async function searchYoutube(query) {
+  let out = await runYtDlp(
+    ['ytsearch1:' + query, '--dump-single-json', '--no-playlist', '--no-warnings',
+     '--socket-timeout', '25', '--retries', '3'],
+    90
+  )
+  let data = JSON.parse(out)
+  let e = (data.entries || [])[0]
+  if (!e) throw new Error(`Nggak nemu "${query}".`)
+  return {
+    title: e.title,
+    id: e.id,
+    duration: e.duration,
+    url: e.webpage_url,
+    thumbnail: e.thumbnail
+  }
+}
+
+// Download + ekstrak audio ke mp3. Hasil akhir: base.mp3
+async function downloadAudio(url, base) {
+  await runYtDlp(
+    ['--extractor-args', EXTRACTOR_ARGS, '-f', '18',
+     '-x', '--audio-format', 'mp3', '--audio-quality', '0',
+     '--no-warnings', '--socket-timeout', '30', '--retries', '5',
+     '-o', base + '.%(ext)s', url],
+    600
+  )
+  let f = base + '.mp3'
+  if (!fs.existsSync(f)) throw new Error('file mp3 tidak terbentuk')
+  let size = fs.statSync(f).size
+  if (!size) throw new Error('file kosong dari yt-dlp')
+  return f
 }
 
 function runCurlOnce(url, outFile, timeoutSec) {
@@ -105,11 +154,6 @@ function cleanTitle(title, max = 70) {
   return t.length > max ? t.slice(0, max - 1) + '…' : t
 }
 
-function fmtSize(bytes) {
-  let mb = (bytes || 0) / 1048576
-  return mb >= 1 ? mb.toFixed(1) + ' MB' : ((bytes || 0) / 1024).toFixed(0) + ' KB'
-}
-
 function fmtDuration(seconds) {
   let n = Number(seconds)
   if (!Number.isFinite(n) || n <= 0) return '-'
@@ -119,7 +163,7 @@ function fmtDuration(seconds) {
 
 module.exports = {
   name: 'play',
-  description: 'Cari lagu di YouTube lalu kirim thumbnail + audio.',
+  description: 'Cari lagu di YouTube lalu kirim thumbnail + audio (yt-dlp, tanpa API).',
   aliases: ['song'],
   tags: ['downloader'],
   permissions: {},
@@ -132,51 +176,30 @@ module.exports = {
 
     await m.reply(`🔎 Mencari "${query}"...`)
 
-    // 1. Cari
-    let search
+    // 1. Cari via yt-dlp (tanpa API)
+    let info
     try {
-      search = await apiGet('/search/yts', { q: query })
+      info = await searchYoutube(query)
     } catch (e) {
       return m.reply('❌ Gagal searching: ' + (e.message || e))
     }
-    if (!search.status) return m.reply('❌ API error: ' + (search.message || 'unknown'))
-    let first = (search.result || [])[0]
-    if (!first) return m.reply(`❌ Nggak nemu "${query}".`)
 
     await m.reply('⏳ Ambil audio...')
 
-    // Helper: ambil link audio fresh dari API
-    const getTrack = async () => {
-      let info = await apiGet('/download/youtube', { url: first.url })
-      if (!info.status) throw new Error('API error: ' + (info.message || 'unknown'))
-      let track = (info.videos || [])[0]
-      if (!track?.url) throw new Error('Nggak ada sumber audio.')
-      return info
-    }
-
-    // 2. Ambil link audio
-    let info
-    try {
-      info = await getTrack()
-    } catch (e) {
-      return m.reply('❌ Gagal ambil link: ' + (e.message || e))
-    }
-    let track = (info.videos || [])[0]
-
-    let title = cleanTitle(info.title || first.title)
+    let title = cleanTitle(info.title)
     let files = []
     let caption = [
       `🎵 *${title}*`,
-      `⏱️ ${fmtDuration(info.duration)} · 💾 ${fmtSize(track.size)}`,
+      `⏱️ ${fmtDuration(info.duration)}`,
       '',
-      first.url
+      info.url
     ].join('\n')
 
-    // PENTING: mulai download audio SEGERA setelah link didapat.
-    // Link download sering kedaluwarsa; jangan tunggu thumbnail terkirim dulu.
-    let audioPromise = download(track.url)
+    // PENTING: mulai download audio SEGERA. Jangan tunggu thumbnail terkirim dulu.
+    let base = path.join(TMP, `yt_${Date.now()}_${Math.random().toString(36).slice(2)}`)
+    let audioPromise = downloadAudio(info.url, base)
 
-    // 3. Thumbnail + info dulu, biar user langsung lihat cover
+    // 2. Thumbnail + info dulu, biar user langsung lihat cover
     if (info.thumbnail) {
       try {
         let buf = await download(info.thumbnail)
@@ -197,28 +220,15 @@ module.exports = {
       await m.reply(caption).catch(() => {})
     }
 
-    // 4. Tunggu audio yang sudah mulai didownload sejak tadi.
-    //    Kalau gagal (mis. link kedaluwarsa), refresh link sekali lalu coba lagi.
+    // 3. Tunggu audio yang sudah mulai didownload sejak tadi
     try {
-      let buf
-      try {
-        buf = await audioPromise
-      } catch (e1) {
-        console.log('Download gagal, refresh link:', e1.message)
-        info = await getTrack()
-        track = (info.videos || [])[0]
-        buf = await download(track.url)
-      }
-
-      let ext = track.type || 'mp3'
-      let f = path.join(TMP, `yt_${Date.now()}.${ext}`)
-      fs.writeFileSync(f, buf)
+      let f = await audioPromise
       files.push(f)
       await conn.message.send(m.chat, {
         type: 'audio',
         media: f,
-        mimetype: track.mimeType || 'audio/mpeg',
-        fileName: `${cleanTitle(info.title || first.title, 50)}.${ext}`,
+        mimetype: 'audio/mpeg',
+        fileName: `${cleanTitle(info.title, 50)}.mp3`,
         ptt: false
       }, { quote: m })
     } catch (e) {

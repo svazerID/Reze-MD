@@ -16,6 +16,17 @@ const readline = require('readline')
 // pakai package ws yang sudah terbukti connect.
 // Inject headers Origin + User-Agent supaya server tidak reject dengan HTTP 200.
 const Ws = require('ws')
+// Container: semua outbound WAJIB lewat egress proxy (env HTTPS_PROXY/https_proxy),
+// direct connection dibunuh di tengah jalan (TLS wrong version). Di Termux env
+// itu tidak ada jadi tetap direct. Patch WebSocket-nya tetap, cuma tambah agent.
+let proxyAgent
+try {
+  const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy
+  if (proxyUrl) {
+    const { HttpsProxyAgent } = require('https-proxy-agent')
+    proxyAgent = new HttpsProxyAgent(proxyUrl)
+  }
+} catch (e) { /* tanpa proxy = direct seperti di Termux */ }
 globalThis.WebSocket = function PatchedWs(url, protocols, opts) {
   // zapo-js calls: new WebSocket(url, { protocols, headers })
   // ws v8 needs:    new Ws(url, protocols, options)
@@ -30,6 +41,7 @@ globalThis.WebSocket = function PatchedWs(url, protocols, opts) {
     }
   }, opts || {})
   // Always use 3-arg form so ws parses headers correctly
+  if (proxyAgent && !opts.agent) opts.agent = proxyAgent
   return new Ws(url, protocols || [], opts)
 }
 Object.assign(globalThis.WebSocket, Ws)
@@ -53,7 +65,8 @@ const PHONE_NUMBER = normalizePhone(process.env.PHONE_NUMBER) || null
 if (process.env.PHONE_NUMBER && (!PHONE_NUMBER || PHONE_NUMBER.length < 10)) {
   console.error(chalk.red(`❌ PHONE_NUMBER tidak valid: ${JSON.stringify(process.env.PHONE_NUMBER)}`))
   console.error(chalk.gray('PHONE_NUMBER harus angka saja, contoh: 6281234567890'))
-  process.exit(1)
+  // exit 2 = fatal butuh campur tangan manusia (supervisor TIDAK auto-retry)
+  process.exit(2)
 }
 
 global.timestamp = { start: new Date() }
@@ -208,7 +221,9 @@ conn.on('connection', (event) => {
   }
   if (event.isLogout || FATAL_REASONS.has(event.reason)) {
     console.error(chalk.red(`🔴 Putus fatal (${event.reason})`) + chalk.gray(' — hapus folder .auth lalu pairing ulang.'))
-    process.exit(1)
+    // exit 2 = fatal (banned/logout) butuh campur tangan manusia: hapus .auth dulu.
+    // Supervisor sengaja TIDAK auto-retry kode ini.
+    process.exit(2)
   }
   if (shuttingDown || event.reason === 'client_disconnected') return
   console.log(chalk.yellow(`⚠️  Koneksi terputus (${event.reason})`))
@@ -401,5 +416,7 @@ conn.connect().then(() => {
   }
 }).catch(err => {
   console.error(chalk.red('❌ Gagal connect:') + ' ' + err.message)
+  // exit 1 = transient (timeout/403 IP-block/dll) → supervisor auto-retry dengan backoff.
+  // Beda dengan exit 2 (fatal: banned/logout/PHONE_NUMBER invalid) yang butuh manusia.
   process.exit(1)
 })

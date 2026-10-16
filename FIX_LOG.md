@@ -1,3 +1,66 @@
+# FIX LOG - plugins/play.js pakai yt-dlp, tanpa API (2026-10-16)
+
+## Gejala / root cause
+- User minta `!play` tidak lagi lewat `api.alfisy.my.id` (`/search/yts` + `/download/youtube`), tapi langsung pakai yt-dlp.
+
+## Perubahan
+- Install yt-dlp standalone 2026.08.19 ke `/home/hatch/bin/yt-dlp` (persisten, 755; `/home/hatch/bin` di-`o+x` supaya user konsol bisa eksekusi). Plugin fallback ke `yt-dlp` di PATH kalau binary tidak ada (mis. di Termux).
+- `plugins/play.js` rewrite: search via `yt-dlp "ytsearch1:<query>" --dump-single-json`, download audio via `-f 18 -x --audio-format mp3`. Helper fetch/curl lama dipertahankan hanya untuk download thumbnail.
+- Jebakan YouTube di IP datacenter: extractor web kena "Sign in to confirm you're not a bot". Solusi: `--extractor-args "youtube:player_client=android"` — lolos bot-check, tapi cuma sedia format 18 (360p mp4+aac) sehingga audio diekstrak dari situ via ffmpeg. Client ios tidak memberi format sama sekali.
+
+## Jebakan
+- Jangan ganti player_client ke web/default tanpa PO token/cookies — langsung kena bot-check lagi.
+
+## Verifikasi
+- `node --check plugins/play.js` lulus.
+- CLI end-to-end: search `ytsearch1:runtuh` → "Runtuh - Feby Putri feat. Fiersa Besari" (id YrtS8MESh0I, 224s); download+convert → mp3 6.3MB, durasi 223.98s (ffprobe).
+- Test command via WhatsApp (`!play`) menunggu user.
+
+---
+
+# FIX LOG - Supervisor auto-retry backoff untuk connect transient (2026-10-14)
+
+## Gejala / root cause
+- VM ke-replace ~00:28 WIB 2026-10-14, semua layanan mati. Restore jalan, tapi wabot gagal connect ke WhatsApp: `websocket connect error` / timeout, lalu `process.exit(1)`.
+- Supervisor lama (`index.js`) cuma restart `main.js` kalau file-nya diedit — habis gagal connect, bot diam mati sampai ada yang `pm2 restart` manual. Cron auto-recovery platform lagi di-skip semua, jadi tidak ada yang membangunkan bot.
+- Tes langsung membuktikan WhatsApp me-reject handshake dari IP egress container dengan **403** (`Unexpected server response: 403`), sama seperti insiden 2026-10-13 18:20 WIB — blokir di sisi WhatsApp, bukan salah kode/proxy. Proxy egress sendiri sehat (curl via proxy ke web.whatsapp.com:443 dan :5222 → 200).
+
+## Perubahan
+- `main.js`: bedakan exit code — `2` = fatal butuh manusia (banned/logout di `FATAL_REASONS`, `PHONE_NUMBER` invalid), `1` = transient (gagal connect awal: timeout/403). Komentar penjelas di tiap `process.exit`.
+- `index.js`: supervisor auto-retry exit transient dengan backoff 2m → 5m → 10m → 15m (reset kalau sempat hidup >10 menit). Exit `2` TIDAK di-retry (tetap tunggu edit `main.js`, sesuai jebakan "Reconnect fatal" di AGENTS.md). Edit `main.js` kapan saja = batalkan timer + restart langsung.
+- Interval 2–15 menit = satu handshake attempt per siklus, tidak agresif, cukup untuk bangun sendiri begitu blokir IP lepas.
+
+## Jebakan
+- Jangan samakan exit 1 dan 2: banned/logout HARUS tetap butuh hapus `.auth` manual, jangan auto-retry.
+- Retry tidak menyelesaikan 403-nya — itu keputusan WhatsApp terhadap IP egress. Retry cuma memastikan bot kembali online sendiri saat blokir dicabut.
+
+## Verifikasi
+- `node --check index.js` dan `node --check main.js` lulus.
+- `pm2 restart wabot` 2026-10-14 ~09:47 WIB: supervisor baru aktif, `main.js` jalan, log retry `[supervisor] retry #1 dalam 2 menit...` muncul setelah gagal connect (403 masih aktif saat itu).
+- Bot akan terus mencoba tiap 2→5→10→15 menit sampai `🟢 Terhubung ke WhatsApp!` muncul di log.
+
+---
+
+# FIX LOG - WebSocket lewat egress proxy di container (2026-10-13)
+
+## Gejala / root cause
+- Bot jalan di container tapi tidak pernah connect ke WhatsApp: `socket open failed`, `websocket connect error for wss://web.whatsapp.com/ws/chat`, `comms connection timeout after 10000ms`.
+- Penyebab: container mewajibkan semua outbound lewat egress proxy (`HTTPS_PROXY`, mis. `http://...@hatch-egress-proxy:3128`). Package `ws` tidak membaca env proxy — koneksi direct dibunuh di tengah jalan (curl `--noproxy '*'` langsung 000, TLS error `wrong version number`).
+- Di Termux (HP) direct connection normal, jadi fix harus aktif hanya kalau env proxy ada.
+
+## Perubahan
+- `main.js`: patch `PatchedWs` tetap (header Origin/UA + 3-arg form, jangan dihapus), ditambah `HttpsProxyAgent` dari env `HTTPS_PROXY`/`https_proxy` kalau ada; kalau tidak ada tetap direct seperti di Termux.
+- `package.json`: tambah dependency `https-proxy-agent` (sudah `npm install`, tersimpan otomatis).
+
+## Jebakan
+- Jangan hapus patch WebSocket — native WebSocket Node tetap gagal handshake ke server WhatsApp; yang ditambah cuma `agent` proxy.
+
+## Verifikasi
+- `node --check main.js` lulus.
+- Restart pm2 2026-10-13 ~07:25 WIB: log menampilkan `🟢 Terhubung ke WhatsApp!` + `📥 Selesai drain event offline` — session SQLite lama langsung reconnect tanpa pairing ulang. Proxy fix terbukti jalan end-to-end.
+
+---
+
 # FIX LOG - AI vision support (2026-10-09)
 
 ## Perubahan
