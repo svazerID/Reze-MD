@@ -1,3 +1,22 @@
+# FIX LOG - Error report tampilkan nomor HP bukan LID mentah (2026-10-18)
+
+## Gejala / root cause
+- User lapor sender di laporan error masih tampil sebagai LID (`215462185062474@lid`).
+- Penyebab: `reportPluginError` di `handler.js` mencetak `m.sender` mentah. `m.sender` memang diset mentah di `lib/simple.js` (bisa PN atau LID tergantung addressing WhatsApp) — padahal codebase sudah punya `global.lidCache` + helper `phoneOf()` di `lib/groupEvents.js` yang resolve LID → nomor HP.
+
+## Perubahan
+- `handler.js`: require `phoneOf` dari `lib/groupEvents` (file itu tanpa require sama sekali — aman dari circular dep), lalu baris `Sender:` di `reportPluginError` pakai hasil resolve. Kalau LID ke-resolve tampil `nomor (lid@lid)`, kalau tidak tampil JID apa adanya (tidak ngarang nomor).
+
+## Jebakan
+- `m.sender` sendiri sengaja TIDAK diubah jadi nomor — perbandingan owner/JID di codebase mengandalkan `normalize()`/`lidCache`, bukan string mentah (lihat AGENTS.md).
+
+## Verifikasi
+- `node --check handler.js` lulus.
+- Unit test `phoneOf`: LID cached → `6285815061014`; LID unknown → fallback nomor mentah; PN biasa → tidak berubah.
+- Bot tetap online setelah hot-reload handler.js (cek pm2).
+
+---
+
 # FIX LOG - plugins/play.js pakai yt-dlp, tanpa API (2026-10-16)
 
 ## Gejala / root cause

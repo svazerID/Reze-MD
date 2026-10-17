@@ -1,10 +1,15 @@
 let simple = require('./lib/simple')
 let { printMessage } = require('./lib/print')
+let { phoneOf } = require('./lib/groupEvents')
 let path = require('node:path')
 
 async function reportPluginError(conn, m, plugin, command, error) {
   let owners = (global.owner || []).map(owner => Array.isArray(owner) ? owner[0] : owner).filter(Boolean)
-  let text = `⚠️ *Plugin error: ${plugin?.name || command || 'unknown'}*\nSender: ${m.sender}\nChat: ${m.chat}\nCommand: ${m.text || '-'}\n\n\`${String(error?.stack || error).slice(0, 2500)}\``
+  // Sender bisa berupa LID (@lid) — resolve ke nomor HP via lidCache biar
+  // kebaca manusia. Kalau tidak ke-resolve, tampilkan JID apa adanya.
+  let senderNum = phoneOf(m.sender)
+  let senderShown = senderNum && senderNum !== m.sender ? `${senderNum} (${m.sender})` : m.sender
+  let text = `⚠️ *Plugin error: ${plugin?.name || command || 'unknown'}*\nSender: ${senderShown}\nChat: ${m.chat}\nCommand: ${m.text || '-'}\n\n\`${String(error?.stack || error).slice(0, 2500)}\``
   for (let owner of owners) {
     try {
       let jid = String(owner).includes('@') ? owner : `${String(owner).replace(/\D/g, '')}@s.whatsapp.net`
