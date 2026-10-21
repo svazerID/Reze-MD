@@ -1,13 +1,7 @@
-const API = 'https://api.alfisy.my.id/api/tools/translate'
-
-// Translate teks. Target default id; "!tr en halo" ganti target bahasa.
-async function translate(text, target = 'id') {
-  let url = `${API}?text=${encodeURIComponent(text)}&target=${encodeURIComponent(target)}`
-  let res = await fetch(url)
-  let data = await res.json()
-  if (!data.success) throw new Error(data.error || 'translate gagal')
-  return data
-}
+// Translate plugin. Logika penyedia + fallback ada di lib/translate.js
+// (api.alfisy -> Google via proxy -> LibreTranslate -> MyMemory), karena
+// endpoint Google membalas 429 dari IP datacenter ini.
+let { translate } = require('../lib/translate')
 
 let handler = async (m, { conn, text, args, usedPrefix, command }) => {
   // Tanpa teks → translate isi pesan yang di-reply (kalau ada)
@@ -39,8 +33,8 @@ let handler = async (m, { conn, text, args, usedPrefix, command }) => {
   }
 
   await m.reply(
-    `*🌐 Translate* (${data.sourceLanguage} → ${data.targetLanguage})\n\n` +
-    `${data.translatedText}`
+    `*🌐 Translate* (${data.from} → ${data.to})\n\n` +
+    `${data.text}`
   )
 }
 

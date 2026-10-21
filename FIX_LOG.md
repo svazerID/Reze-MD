@@ -1,3 +1,211 @@
+# FIX LOG - translate.js 429: rantai fallback penyedia (2026-10-21)
+
+## Gejala / root cause
+- `!tr` balas `❌ Gagal translate: Request failed with status code 429`.
+- Bukan bug plugin. `GET api.alfisy.my.id/api/tools/translate` balas **HTTP 500** dengan `error: "Request failed with status code 429"` — API itu hanya meneruskan 429 dari upstream Google.
+- Akar sebenarnya: **IP server ini di-429 Google.** Diuji langsung `translate.googleapis.com/translate_a/single?client=gtx...` → **429** halaman "Sorry...". Jadi mengganti parameter/retry di plugin tidak akan menolong; egress IP-nya yang ditolak.
+
+## Perubahan
+- `lib/translate.js` (baru) — rantai penyedia, dipakai berurutan sampai ada yang berhasil:
+  1. `api.alfisy.my.id/api/tools/translate` (timeout 8s — cepat menyerah karena biasanya langsung 500)
+  2. **Google `client=gtx` via proxy pool** — jalur utama yang benar-benar jalan
+  3. LibreTranslate (`translate.disroot.org`) — tanpa proxy
+  4. MyMemory (`api.mymemory.translated.net`) — tanpa proxy, sumber `en` (tidak mendukung `auto`)
+  Kegagalan tiap penyedia dikumpulkan; kalau semua gagal, pesan error menyebut semuanya.
+- Pool proxy **khusus translate** di `lib/translate.js`: diuji ke `translate.googleapis.com` dan diurutkan tercepat, cache ke `tmp/translate-pool.json` (TTL 10 menit), early-stop setelah 4 proxy <3s.
+- `plugins/translate.js` disederhanakan: hanya parsing argumen + `lib/translate`. Field hasil ikut berubah (`data.from`, `data.to`, `data.text`).
+
+## Jebakan
+- **Pool `lib/proxyPool.js` tidak boleh dipakai apa adanya untuk translate.** Pool itu diurutkan untuk vidssave.com; proxy yang cepat di sana bisa 10s di translate (diukur). Karena itu ada pool terpisah dengan probe ke endpoint translate.
+- **Build pool pertama mahal (40-52s).** Tanpa cache, user pertama menunggu ~93s. Cache disk `tmp/translate-pool.json` menurunkannya ke 1.5-4.9s pada run berikutnya.
+- **MyMemory tidak mendukung `source=auto`** — `langpair` wajib eksplisit, jadi dipaksa `en|<target>`. Deteksi bahasa otomatis hanya akurat di jalur Google.
+- `viaAlfisy` tetap dipertahankan paling depan: kalau suatu saat 429-nya lepas (atau bot dipindah ke IP residential), jalur ini yang tercepat dan tidak butuh proxy.
+
+## Verifikasi
+- Reproduksi awal: alfisy → `HTTP 500 / "Request failed with status code 429"`; `translate.googleapis.com` langsung → **429**.
+- Proxy pool: 3/3 proxy balas **200** dan terjemahan benar (`hello world` → `halo dunia`).
+- Jalur alternatif tanpa proxy: LibreTranslate `200 {"translatedText":"halo dunia"}`, MyMemory `200 "Halo Dunia"`.
+- `translate()` 4 kasus: `hello world`→`halo dunia` (en→id), `selamat pagi`→`good morning` (ms→en), `good morning`→`おはよう` (en→ja), `terima kasih banyak`→`Thank you very much` (id→en). Semua `via google-proxy`.
+- Plugin end-to-end (`!tr`): run dengan cache **1.7s / 1.5s / 4.9s**, output `*🌐 Translate* (en → id) / halo dunia`.
+- Bot hot-reload (`♻️ Reload plugin 'translate.js'`), pm2 `online` pid 1393.
+
+---
+
+# FIX LOG - play.js: URL YouTube tampil dobel di caption (2026-10-21)
+
+## Gejala / root cause
+- Setelah cover dipindah ke `linkPreview`, link YouTube muncul **dua kali** di satu pesan.
+- Penyebab: `info.url` dimasukkan ke `caption` **dan** di-prepend ke `content.text` sebagai anchor `matchedText` untuk link preview. Dua sumber, satu URL.
+
+## Perubahan
+- `plugins/play.js`:
+  - `caption` tidak lagi memuat `info.url` — hanya judul + durasi.
+  - URL dipasang **sekali** di `content.text` sebagai anchor `linkPreview`, diikuti newline supaya judul tidak menempel ke link.
+  - Jalur tanpa thumbnail (tidak ada `linkPreview`) menambahkan URL sekali di akhir caption, jadi info link tetap ada tanpa duplikasi.
+
+## Jebakan
+- `matchedText` **wajib** ada di `content.text`, jadi URL memang harus ikut di teks — tapi jangan sekaligus ditaruh di `caption` yang digabung ke teks yang sama. Satu URL, satu tempat.
+- Zero-width space (400x) diletakkan **setelah** newline, bukan langsung menempel ke URL, supaya judul tidak jadi satu baris dengan link.
+
+## Verifikasi
+- Dengan thumbnail: jumlah `youtu.be` di teks (zero-width dibuang) = **1**; `linkPreview: true`. Teks final:
+  `https://youtu.be/YrtS8MESh0I` / `🎵 *Runtuh - Feby Putri feat. Fiersa Besari (Official Visualizer)*` / `⏱️ 3:44`.
+- Tanpa thumbnail (`thumbnail: null` dipaksa): `linkPreview: false`, jumlah URL = **1**, URL di akhir caption.
+- Audio tetap terkirim: 6.897.284 B.
+- Bot hot-reload (`♻️ Reload plugin 'play.js'`), pm2 `online` pid 1393.
+
+---
+
+# FIX LOG - play.js kirim cover lewat linkPreview seperti menu.js (2026-10-21)
+
+## Gejala / root cause
+- `play` mengirim thumbnail sebagai **pesan image terpisah**, lalu audio di pesan kedua. Hasilnya dua bubble untuk satu perintah, dan file thumbnail harus ditulis ke `tmp/` lalu dihapus lagi.
+- `plugins/menu.js` sudah punya pola yang lebih rapi: resize pakai `sharp`, lalu kirim sebagai `linkPreview` di dalam pesan teks (bukan pesan image).
+
+## Perubahan
+- `plugins/play.js`:
+  - Tambah `makeInlineThumb(buf)` — `sharp().resize(300,300,{fit:'inside'}).jpeg({quality:80})`, `width/height` eksplisit `1280x720`. Sama persis dengan `getThumb()` di `menu.js`.
+  - Ganti pengiriman: dari `type: 'image'` terpisah menjadi `type: 'text'` + `content.linkPreview` (`matchedText`, `title`, `description`, `thumbnail`). URL video ditaruh di awal teks + 400 zero-width space supaya link ter-render tapi tidak terlihat.
+  - Thumbnail tidak lagi ditulis ke `tmp/` — diproses di memori.
+  - Deskripsi plugin disesuaikan (tidak lagi menyebut VidsSave sebagai jalur utama).
+
+## Jebakan
+- **Thumbnail inline WA dibatasi 64KB** (`INLINE_THUMBNAIL_MAX_BYTES` di zapo). Tanpa resize sharp, `hq720.jpg` (49KB) kadang masih lolos tapi tidak konsisten; hasil resize jadi **5.184 B / 300x168** — aman.
+- **`matchedText` wajib ada di dalam `content.text`.** Kalau URL-nya tidak ikut di teks, WhatsApp tidak merender preview. Zero-width space dipakai supaya URL tidak tampak sebagai teks URL.
+- **Jangan kirim `linkPreview` di pesan audio** — hanya di pesan teks. Audio tetap dikirim terpisah tanpa preview.
+
+## Verifikasi
+- `play.run()` end-to-end: pesan pertama `type: 'text'` dengan `linkPreview` (`matchedText: https://youtu.be/YrtS8MESh0I`, `title` judul lagu, `description: 3:44 • YouTube`, thumb **5.184 B**, `1280x720`), `matchedText` terkonfirmasi ada di `text`. Pesan kedua `type: 'audio'` 6.897.284 B tanpa `linkPreview`.
+- Thumbnail divalidasi dengan `sharp.metadata()`: `300x168`, format `jpeg`, dari sumber 49.078 B → 5.184 B (<64KB).
+- Bot hot-reload (`♻️ Reload plugin 'play.js'`), pm2 `online` pid 1393, tidak ada error `play`/`sharp` di error log.
+
+---
+
+# FIX LOG - Cookie YouTube + JS runtime: play.js lewat yt-dlp lagi (2026-10-21)
+
+## Gejala / root cause
+- `play` masih bergantung VidsSave + rotasi proxy: jalan, tapi **lambat 20-40 detik** (proxy gratis 0.3-0.7 MB/s) dan proxy sering mati.
+- yt-dlp langsung selalu gagal `Sign in to confirm you're not a bot` (IP datacenter). Playwright/stealth **tidak menolong** — Cloudflare/YouTube memblokir di lapisan IP, bukan fingerprint (dibuktikan: `403`, body 1 byte).
+- Setelah cookie akun dipasang, error **berubah** jadi `The page needs to be reloaded` / `No video formats found`. Itu kemajuan: cookie diterima (`Found YouTube account cookies`), masalahnya pindah ke solver n-challenge.
+- Akar sebenarnya terlihat di `-v`: `[jsc] JS Challenge Providers: bun (unavailable), deno (unavailable), node (unavailable), quickjs (unavailable)` → `n challenge solving failed` → format tidak ketemu.
+
+## Perubahan
+- `~/.config/yt-dlp/config` (baru, mode 600): `--cookies ~/.config/yt-dlp/cookies.txt` + `--js-runtimes node`. Dengan config ini `yt-dlp <url>` jalan tanpa flag apa pun.
+- `~/.config/yt-dlp/cookies.txt`: 22 cookie akun, format Netscape, semua di domain `.youtube.com` (cookie `.google.com` tidak terkirim ke youtube.com).
+- `plugins/play.js`:
+  - **Urutan download dibalik**: yt-dlp dulu (diukur ~28 MB/s, tanpa relay pihak ketiga), VidsSave + rotasi proxy jadi cadangan. Kalau dua-duanya gagal, pesan menyebut keduanya.
+  - `resolveYtDlp()`: cari path absolut (`/home/hatch/bin`, `$HOME/.bun/bin`, `$HOME/.local/bin`, `/usr/local/bin`, `/usr/bin`) sebelum jatuh ke lookup PATH.
+
+## Jebakan
+- **`--js-runtimes node` wajib.** Tanpa flag ini yt-dlp melaporkan `node (unavailable)` walau Node ada di PATH, lalu gagal dengan pesan menyesatkan (`No video formats found`). Flag harus eksplisit; auto-detect tidak jalan di build standalone.
+- **Jangan andalkan lookup PATH untuk yt-dlp.** Di pm2 PATH bisa tidak memuat `~/.bun/bin`; gejalanya `spawn yt-dlp ENOENT` dan `play` gagal dalam 1.5 detik. Ini pernah membuat saya salah menyimpulkan "intermiten" — padahal biner-nya memang tidak ketemu.
+- **`~/.bun/bin`, `~/.npm-global`, dan `node_modules` HILANG setiap VM restart.** Setelah restart 08:33, `yt-dlp`, `bun`, `pm2`, dan semua deps lenyap; yang selamat cuma file repo (`.auth`, `logs`, `FIX_LOG.md`, `lib/`) dan cookie. Jangan simpan tooling hanya di home tanpa rencana pasang ulang.
+- **Cookie = kredensial sesi.** Sudah masuk `.gitignore` (`.yt-cookies.txt`), mode 600. Jangan commit, jangan tampilkan isinya.
+- Cookie bisa kedaluwarsa/di-invalidate kapan saja; kalau `Sign in to confirm` muncul lagi, export ulang.
+- `--cookies` + `--js-runtimes node` **tidak** perlu proxy. Jalur proxy tetap disimpan sebagai cadangan kalau cookie mati.
+
+## Verifikasi
+- Tanpa flag (config otomatis): `yt-dlp --simulate --print '%(title)s'` → `Runtuh - Feby Putri feat. Fiersa Besari (Official Visualizer) | 224 dtk`.
+- Download nyata: `t.mp3` **6.897.284 B**, ~27.5 MB/s (vs 0.3-0.7 MB/s lewat proxy).
+- `play.run()` end-to-end dengan **PATH minimal** (`env -i HOME=... PATH=/usr/local/bin:/usr/bin:/bin`, meniru pm2) — 6/6 query sukses, 10.9-15.6 detik:
+  `runtuh` 6.897.284 B (15.6s) · `tulus monokrom` 7.114.844 B (12.1s) · `sheila on 7 dan` 8.570.540 B (11.8s) · `nadin amizah` 7.508.108 B (12.2s) · `feast perempuan` 9.484.412 B (12.9s) · `hindia secukupnya` 7.103.084 B (14.8s).
+- Bot pulih: pm2 `online` (pid 1393), `🟢 Terhubung ke WhatsApp!`, sesi lama tanpa pairing ulang, `pm2 save` tersimpan.
+
+---
+
+# FIX LOG - play.js: bypass blokir Cloudflare VidsSave via rotasi proxy (2026-10-20)
+
+## Gejala / root cause
+- Setelah search dipindah ke API alfisy, `play` masih gagal di tahap download: VidsSave balas `analyze_risk`, dan yt-dlp balas `Sign in to confirm you're not a bot`.
+- Diagnosis: **Cloudflare memblokir di edge, bukan JS challenge.** `https://vidssave.com/` balas `403`, body **1 byte**, `server: cloudflare`, `cf-ray: ...-IAD`, `content-type: text/plain`. Blokir terjadi sebelum JS apa pun jalan.
+- Karena itu **Playwright tidak bisa menolong**: diuji dengan `playwright-core` 1.64.1 + Chromium, plus stealth (override `navigator.webdriver`, `window.chrome`, `sec-ch-ua`, locale/timezone) — tetap `403`, body 1 byte. Blokirnya di lapisan IP, bukan fingerprint browser.
+
+## Perubahan
+- `lib/proxyPool.js` (baru): ambil daftar proxy gratis dari 3 sumber (proxyscrape, TheSpeedX, monosans), uji mana yang benar-benar sampai ke `vidssave.com` (harus 200 **dan** body > 2KB — 403 Cloudflare kadang menyamar jadi 200 dengan body kosong), ukur latensi, urutkan tercepat, cache ke `tmp/proxy-pool.json` (TTL 10 menit), rotasi round-robin, `markDead()` untuk yang gagal, `forceRefresh()` untuk buang cache basi.
+- `lib/vidsaveFetch.js` (baru): `parseVia()` POST ke endpoint parse lewat proxy bergantian (maks 6 percobaan), `downloadVia()` ambil file lewat proxy (timeout 45s/percobaan, 6 percobaan, rotasi agresif).
+- `vidssave-plugin.js`: `scrapeVidsSave` coba request **langsung dulu** (kalau bot di IP residential, tidak perlu relay), fallback ke proxy kalau kena `analyze_risk`/403. Hasil menyertakan `viaProxy` supaya download bisa lewat proxy yang sama.
+- `plugins/play.js`: download lewat `downloadVia` kalau parse-nya lewat proxy; konversi hasil ke **mp3 asli** via ffmpeg (`toMp3`) — VidsSave menyajikan WebM/Opus atau M4A, bukan mp3.
+
+## Jebakan
+- **Jangan kirim buffer VidsSave dengan ekstensi `.mp3` tanpa konversi.** Isinya WebM/Opus; WhatsApp bisa menolak atau salah memutar durasi. Diuji: 4.001.080 B WebM/Opus → 5.182.148 B mp3 setelah `ffmpeg -c:a libmp3lame -q:a 2`.
+- **Proxy yang lolos parse belum tentu bisa download.** Diukur 0.3-0.7 MB/s, dan satu percobaan pernah 403 setelah **42 detik**. Karena itu timeout per percobaan 45s dan langsung pindah proxy, bukan menunggu satu proxy selesai.
+- **Proxy gratis cepat mati.** Cache 10 menit bisa berisi proxy yang semuanya sudah mati → request berikutnya gagal cepat (`fetch failed`) tanpa pernah mencoba yang segar. Karena itu `forceRefresh()` dipanggil setelah semua percobaan gagal, dan TTL diturunkan dari 30 ke 10 menit.
+- **`refresh()` harus mengembalikan array string**, bukan objek skor. Sempat salah dan `nextProxy()` mengembalikan `{p, ms}` sehingga `fetch` gagal dengan pesan membingungkan.
+- **Jangan pakai proxy ini untuk kredensial.** Ini relay pihak ketiga; yang lewat sini hanya request publik ke VidsSave (tanpa cookie/token akun).
+- Hasil pencarian teratas bisa video kompilasi berjam-jam (`lofi hip hop` → 6 jam, audio 380MB). Itu bukan bug: `play` menolaknya dengan pesan agar user memakai judul lebih spesifik.
+
+## Verifikasi
+- **Cloudflare**: `curl` langsung → 403 body 1 byte, `cf-ray ...-IAD`. Via proxy `102.244.78.61:8083` → **200, body 354.646 B**.
+- **Playwright tidak menolong**: `chromium.launch()` + stealth → `https://vidssave.com/` tetap **403, body 1 byte**.
+- **Rantai lengkap manual**: parse via proxy → `status: 1`, payload AES 13.850 B → decrypt OK → 11 resource (video 144P-1440P, audio 48-256kbps) → download `256KBPS OPUS` **4.001.080 B** (cocok dengan metadata) → `ffprobe`: opus, 223.98s → mp3 5.182.148 B.
+- **Screening proxy**: 3.154 kandidat diuji → **290 lolos** ke vidssave.com; pool runtime menyusut ke ~20 tercepat dan rotasi terbukti (4 request berturut-turut lewat 4 proxy berbeda, semuanya `status: 1`, 1.1-6.3s).
+- **End-to-end `run()` nyata** (bukan stub), 5 query: `runtuh` OK 5.182.148 B (35.1s), `tulus monokrom` OK 5.234.372 B (20.6s), `sheila on 7 dan` OK 6.384.932 B (27.3s), `nadin amizah` OK 5.438.924 B (40.3s), `lofi hip hop` ditolak dengan pesan size guard (2.2s) — sesuai harapan.
+- **Tanpa regresi**: `vidssave-plugin.js` CLI mode sekarang `status: true` (sebelumnya `analyze_risk`) — plugin `vidssave` ikut sembuh karena berbagi `scrapeVidsSave`.
+- Bot tetap `online` (pid 1311, 74 menit), hot-reload `♻️ Reload plugin 'play.js'`, tidak ada error setelah 18:31.
+
+---
+
+# FIX LOG - play.js: search pakai API alfisy, download lewat VidsSave (2026-10-20)
+
+## Gejala / root cause
+- `plugins/play.js` pakai `ytsearch1:` dari yt-dlp. YouTube memblokir IP datacenter host ini: **semua** `player_client` (`android`, `ios`, `tv`, `tv_embedded`, `mweb`, `web_safari`, `visionos`) balas `Sign in to confirm you're not a bot`. Jadi `play` mati total di server, bukan cuma lambat.
+- `vidssave-plugin.js` sudah punya scraper VidsSave lengkap, tapi `scrapeVidsSave` tidak di-export — tidak bisa dipakai ulang dari plugin lain tanpa duplikasi kode.
+
+## Perubahan
+- `vidssave-plugin.js`: export `scrapeVidsSave` (`module.exports.scrapeVidsSave`) supaya `play.js` pakai logika parse/decrypt yang sama. Tidak ada perubahan perilaku plugin `vidssave` sendiri.
+- `plugins/play.js` ditulis ulang:
+  - **Search** → `GET https://api.alfisy.my.id/api/search/yts?q=`. Ambil hasil pertama. Field API beda dari yt-dlp: `duration` string (`"3:44"`) bukan detik, jadi ada `parseDuration()`; id di `videoId`, url di `url`.
+  - **Download** → `scrapeVidsSave(url)` lalu `pickAudio()` pilih resource `type: audio` kualitas tertinggi (`128kbps` > `64kbps`). `download()` (fetch + fallback curl resume) dipakai ulang untuk ambil file dan thumbnail.
+  - yt-dlp diturunkan jadi jalur terakhir, hanya kalau VidsSave tidak menyediakan audio. Kalau dua-duanya gagal, pesan error menggabungkan **kedua** alasan, bukan cuma yang terakhir.
+  - `analyze_risk` dari VidsSave diterjemahkan jadi pesan yang bisa ditindaklanjuti, bukan dump JSON mentah.
+
+## Jebakan
+- **VidsSave menolak IP datacenter** dengan `status_code: 'analyze_risk'` (HTTP 200 tapi `status: 0`). Retry tidak menolong: sudah diuji 4 varian payload (`origin=cache|web`, tanpa origin, `domain=api.`) dan 3x percobaan berturut-turut — semuanya `analyze_risk`. Homepage `vidssave.com` sendiri balas **403**. Jadi `play` hanya jalan penuh dari IP residential (Termux/HP).
+- **`/api/download/youtube` di API alfisy juga mati dari IP ini**: `502` dengan `Upstream init response missing convertURL` dan `snapyt: ... 403 | proxy 403`. Search-nya sehat (200, 19 hasil) — jadi jangan simpulkan API-nya rusak hanya karena endpoint download gagal.
+- Kalau `vidssave-plugin.js` diubah, `play.js` ikut ter-reload karena `require`-nya. Tapi **tidak** sebaliknya: mengubah `vidssave-plugin.js` tidak memicu `fs.watch` di `plugins/` — perlu sentuh `play.js` atau restart.
+- Menulis file plugin saat bot hidup memicu error transien `Plugin 'play.js' format tidak dikenali` (loader membaca file di tengah penulisan). Cek log setelah reload sebelum menyimpulkan plugin rusak.
+
+## Verifikasi
+- Search API live: `GET /api/search/yts?q=runtuh` → HTTP 200, 19 hasil, `status: true`.
+- End-to-end `run()` nyata (bukan mock): reply `🔎 Mencari "runtuh"...` → `⏳ Ambil audio...` → kirim image thumbnail 49.078 B + caption `🎵 *Runtuh - Feby Putri feat. Fiersa Besari (Official Visualizer)* / ⏱️ 3:44 / https://youtu.be/YrtS8MESh0I`. Judul & durasi cocok dengan respons API.
+- Jalur download diuji dengan `scrapeVidsSave` di-stub (server lokal menyajikan mp3 12.942 B): `pickAudio` benar memilih `128kbps` (12.942 B) dan **bukan** `64kbps` (9.000 B); file terkirim sebagai `audio`, `fileName` terisi, `tmp/` bersih setelah selesai.
+- Jalur gagal nyata: reply `❌ Gagal download: VidsSave menolak IP server ini (analyze_risk) - jalankan bot dari IP residential/Termux | yt-dlp: ERROR: [youtube] ... Sign in to confirm you're not a bot`.
+- Hot-reload: `♻️ Reload plugin 'play.js'` muncul di log, bot tetap `online` (pid sama, tanpa restart). Tidak ada error setelah 18:32:53.
+- `node --check plugins/play.js` + `node --check vidssave-plugin.js` lulus; `require` plugin mengembalikan object dengan `run`, `command: /^(play|song)$/i`, `aliases: ['song']`, `tags: ['downloader']`.
+
+---
+
+# FIX LOG - Deploy pm2 lewat ecosystem.config.js (2026-10-20)
+
+## Gejala / root cause
+- Bot dijalankan manual `npm start` di shell interaktif. Shell ditutup atau VM restart = bot mati, tidak ada yang membangkitkan. `index.js` cuma supervisor untuk `main.js`, bukan untuk dirinya sendiri.
+- `index.js` juga tidak meneruskan status ke pm2: kalau `main.js` berhenti normal (`exit 0`), supervisor ikut selesai dan pm2 melihat proses sukses, bukan crash.
+
+## Perubahan
+- `ecosystem.config.js` baru di root repo:
+  - `script: 'index.js'` + `cwd: __dirname` — pm2 mengawasi supervisor, bukan `main.js` langsung. Kalau pm2 menjalankan `main.js` langsung, backoff retry di `index.js` hilang.
+  - `autorestart: true` menutup celah exit 0 di atas.
+  - `max_restarts: 5` + `min_uptime: '60s'` + `restart_delay: 5000` — pairing/config salah berhenti setelah 5x, tidak restart-loop.
+  - `max_memory_restart: '900M'`, `kill_timeout: 10000` (beri waktu handler sinyal tutup sqlite + jadibot).
+  - `env.PATH` menyertakan `$HOME/.bun/bin` — pm2 mewarisi PATH minimal, `plugins/play.js` cari `yt-dlp` di PATH.
+- `.gitignore`: tambah `logs/` (pm2 out/error log).
+
+## Jebakan
+- **`cwd` wajib root repo.** `main.js` buka `database.json` dan `.auth/state.sqlite` pakai path relatif. `cwd` salah = sesi baru = pairing ulang, sesi lama di WhatsApp jadi perangkat yatim.
+- **Jangan pernah dua proses pada satu `.auth`.** Proses kedua kena `stream_error_replaced` (ada di `FATAL_REASONS` → `process.exit(1)`). Handover harus: matikan proses lama dulu, baru `pm2 start`.
+- **`PHONE_NUMBER` wajib diisi via env saat pairing.** Di pm2 tidak ada TTY, `askPhone()` di `main.js` menggantung. Setelah sesi terdaftar env ini tidak dipakai lagi, tapi aman dibiarkan.
+- **`pm2 startup` tidak bisa dipakai di container ini** — tanpa systemd, `/etc/s6-overlay/s6-rc.d` milik root. Pakai `pm2 save` + `pm2 resurrect` manual setelah reboot.
+- pm2 God Daemon jalan sebagai user yang men-start-nya. Bot milik user lain (mis. root) **tidak bisa** di-adopt atau dimatikan oleh pm2 user lain.
+
+## Verifikasi
+- Diuji di salinan repo terpisah (tanpa `.auth`): `pm2 start ecosystem.config.js` → `online`, banner + 35 plugin termuat, pairing code ter-mint.
+- `pm2 restart` → pid berubah (↺ 1), log lanjut normal.
+- `pm2 stop` → SIGTERM ditangkap, log `🔴 Mematikan bot...` (graceful, bukan SIGKILL).
+- `pm2 env` → `PATH` memuat `$HOME/.bun/bin`, `PHONE_NUMBER` + `NODE_ENV=production` terwarisi.
+- `execFile('yt-dlp', ['--version'])` dari cwd bot → `2026.08.19`, tidak ENOENT.
+
+---
+
 # FIX LOG - Error report tampilkan nomor HP bukan LID mentah (2026-10-18)
 
 ## Gejala / root cause

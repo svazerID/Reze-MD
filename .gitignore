@@ -2,5 +2,7 @@ node_modules/
 .auth/
 database.json
 tmp/
+logs/
+.yt-cookies.txt
 push-github.sh
 data/

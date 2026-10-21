@@ -50,26 +50,47 @@ function qScore(q) { // '720p' -> 720, '128kbps' -> 128
 }
 
 async function scrapeVidsSave(mediaUrl) {
-  const payload = new URLSearchParams({
-    hostname: 'vidssave.com',
-    auth: '4c9b7d21',
-    domain: 'api-ak.vidssave.com',
-    origin: 'cache',
-    link: mediaUrl,
-  }).toString()
-  const res = await fetch('https://api.vidssave.com/api/contentsite_api/media/parse', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-      Origin: 'https://vidssave.com',
-      Referer: 'https://vidssave.com/',
-      Accept: 'application/json, text/plain, */*',
-    },
-    body: payload,
-    signal: AbortSignal.timeout(25000),
-  })
-  const data = await res.json()
+  // Request langsung (tanpa proxy) duluan: kalau bot jalan dari IP residential
+  // (Termux/HP), ini yang tercepat dan tidak perlu relay pihak ketiga.
+  // Kalau kena analyze_risk / 403, baru rotasi proxy (lib/vidsaveFetch.js).
+  let data = null
+  let viaProxy = null
+  try {
+    const payload = new URLSearchParams({
+      hostname: 'vidssave.com',
+      auth: '4c9b7d21',
+      domain: 'api-ak.vidssave.com',
+      origin: 'cache',
+      link: mediaUrl,
+    }).toString()
+    const res = await fetch('https://api.vidssave.com/api/contentsite_api/media/parse', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        Origin: 'https://vidssave.com',
+        Referer: 'https://vidssave.com/',
+        Accept: 'application/json, text/plain, */*',
+      },
+      body: payload,
+      signal: AbortSignal.timeout(25000),
+    })
+    data = await res.json()
+  } catch (e) {
+    data = { status: 0, msg: e.message || String(e) }
+  }
+
+  // Jalur langsung gagal (IP datacenter) -> rotasi proxy.
+  if (!data || data.status !== 1) {
+    try {
+      const alt = await require('./lib/vidsaveFetch').parseVia(mediaUrl)
+      if (alt.ok) { data = alt.data; viaProxy = alt.proxy }
+      else if (!data?.status_code) data = { status: 0, msg: alt.message }
+    } catch (e) {
+      // biarkan data lama; errornya sudah informatif
+    }
+  }
+
   if (!data || data.status !== 1) {
     return { status: false, message: data?.error_msg || data?.msg || data?.status_code || 'gagal memproses media', raw: data }
   }
@@ -90,6 +111,7 @@ async function scrapeVidsSave(mediaUrl) {
     thumbnail: parsed.thumbnail,
     duration: parsed.duration,
     resources,
+    viaProxy,   // proxy yang dipakai (null kalau request langsung berhasil)
     raw: parsed,
   }
 }
@@ -167,6 +189,9 @@ module.exports = {
     }
   }
 }
+
+// Dipakai juga oleh plugins/play.js: jangan duplikasi logika parse/decrypt.
+module.exports.scrapeVidsSave = scrapeVidsSave
 
 // ---- CLI test mode (jalan dari Termux, IP residential): node vidssave-plugin.js <url> [audio]
 if (require.main === module) {
