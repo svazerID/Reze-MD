@@ -1,4 +1,4 @@
-# wa-bot-zapo
+# Reze-MD
 
 Bot WhatsApp dengan [zapo-js](https://github.com/vinikjkkj/zapo), Pairing via **kode 8 karakter** (tanpa scan QR), session persisten di SQLite, hot reload plugin tanpa restart.
 
@@ -31,7 +31,7 @@ Patch perlu diulang setiap upgrade Node (folder cache per-versi).
 ## Instalasi
 
 ```bash
-git clone <repo> && cd wa-bot-zapo
+git clone <repo> && cd Reze-MD
 npm install
 ```
 
@@ -129,7 +129,7 @@ Prefix default: `! # $ % + ...` (lihat `global.prefix` di `config.js`).
 ## Struktur Proyek
 
 ```
-wa-bot-zapo/
+Reze-MD/
 ├── index.js            # Supervisor: spawn main.js, auto-restart saat crash
 ├── main.js             # Koneksi zapo, pairing, reconnect, plugin loader + hot reload
 ├── config.js           # Owner, prefix, packname (hot-reload)

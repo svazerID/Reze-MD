@@ -6,8 +6,8 @@ global.owner = ['62895615063060']
 global.mods = []
 global.prems = []
 
-global.packname = 'wa-bot-zapo'
-global.author = 'zapo-js'
+global.packname = 'Reze-MD'
+global.author = 'Reze-MD'
 
 global.prefix = /^[!#$%+£¢€¥^°=¶∆×÷π√✓©®:;?&.\-]/
 

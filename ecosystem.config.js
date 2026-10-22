@@ -1,4 +1,4 @@
-// Konfigurasi pm2 untuk wa-bot-zapo.
+// Konfigurasi pm2 untuk Reze-MD.
 // Pakai: pm2 start ecosystem.config.js && pm2 save
 //
 // Catatan penting:
@@ -10,7 +10,7 @@
 module.exports = {
   apps: [
     {
-      name: 'wa-bot-zapo',
+      name: 'Reze-MD',
       script: 'index.js',
       cwd: __dirname,
       interpreter: 'node',

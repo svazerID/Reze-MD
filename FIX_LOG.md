@@ -1,3 +1,31 @@
+# FIX LOG - Ganti nama bot jadi Reze-MD (2026-10-22)
+
+## Perubahan
+Nama bot diganti dari `wa-bot-zapo` ke **Reze-MD** di seluruh titik yang terlihat user:
+- `package.json` + `package-lock.json`: `name` → `Reze-MD` (dipakai banner `main.js`/`index.js` via `pkg.name`).
+- `config.js`: `global.packname` dan `global.author` → `Reze-MD`. Ini yang muncul di judul `!menu`, link preview menu, dan nama pack stiker.
+- `main.js`: baris banner `🤖 Reze-MD`; padding versi diganti `padEnd(40)` supaya kotak tidak berantakan saat nama berubah panjang.
+- `ecosystem.config.js`: `name: 'Reze-MD'` (nama app di pm2) + komentar.
+- `README.md`: judul, perintah `cd`, dan diagram struktur.
+- `backup.js`: komentar.
+- `~/botctl`: `APP=Reze-MD`.
+
+## Jebakan
+- **Nama app pm2 berubah berarti app lama harus dihapus dulu.** `pm2 delete wa-bot-zapo` lalu `pm2 start ecosystem.config.js`; kalau tidak, dua app jalan dan berebut `.auth` (`stream_error_replaced` → exit).
+- **`botctl` kehilangan bit executable setelah VM restart.** `chmod +x botctl` perlu diulang; kalau tidak, `./botctl` gagal `Permission denied`.
+- **`config.js` memasang `fs.watchFile`**, jadi `node -e "require('./config.js')"` tidak pernah exit (proses ditahan watcher). Untuk verifikasi nilai, baca file sebagai teks — jangan `require`.
+- **Path direktori repo tetap `wa-bot-zapo`** (sengaja tidak di-rename): `ecosystem.config.js` pakai `cwd: __dirname`, `.auth`/`database.json` relatif, dan pm2 dump menyimpan path absolut. Rename folder akan memutus semuanya tanpa manfaat.
+- Nama di `FIX_LOG.md` lama dibiarkan apa adanya — itu catatan historis, bukan konfigurasi aktif.
+
+## Verifikasi
+- Banner: `🤖 Reze-MD` / `Reze-MD v1.0.0` / `zapo-js • Node.js + Termux`, kotak rata.
+- `pm2 list` → app `Reze-MD` `online`, 35 plugin termuat, `🟢 Terhubung ke WhatsApp!`, sesi lama tanpa pairing ulang.
+- `grep -rn "wa-bot-zapo"` di luar `FIX_LOG.md` → **kosong**.
+- `packname: Reze-MD | author: Reze-MD`; dipakai `plugins/menu.js` (2 tempat) dan `plugins/sticker.js`.
+- `botctl status` menampilkan `Reze-MD` setelah `chmod +x`.
+
+---
+
 # FIX LOG - translate.js 429: rantai fallback penyedia (2026-10-21)
 
 ## Gejala / root cause
