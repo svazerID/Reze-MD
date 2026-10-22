@@ -6,3 +6,6 @@ logs/
 .yt-cookies.txt
 push-github.sh
 data/
+database.json.backup
+database.json.*.bak
+*.json.backup

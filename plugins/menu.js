@@ -31,7 +31,7 @@ module.exports = {
             if (!p.tags?.length || !p.names?.length) continue
             for (let tag of p.tags) (byTag[tag] ??= []).push(p)
         }
-        let lines = [`*${global.packname || 'Bot'}*`, '']
+        let lines = [`${global.packname || 'Bot'}`, '']
         let total = 0
         for (let [tag, plugins] of Object.entries(byTag)) {
             lines.push(`── *${tag.toUpperCase()}* ──`)

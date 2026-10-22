@@ -1,3 +1,30 @@
+# FIX LOG - paksa pakai JID, jangan LID (2026-10-22)
+
+## Gejala / root cause
+- Database (`database.json`) menyimpan entri dengan ID `@lid` (Lightweight ID), bukan nomor HP.
+- Penyebab: `lib/simple.js` menyimpan `m.sender`/`m.chat` apa adanya dari `event.key`, padahal WhatsApp/Zapo bisa meng-address pengirim sebagai LID. LID hanya dipetakan ke nomor lewat `global.lidCache`, jadi begitu cache kosong (proses restart) seluruh ID jatuh ke LID dan tidak bisa dipakai untuk mention/banding JID.
+
+## Perubahan
+- `lib/simple.js` — `m.sender`/`m.chat` sekarang **dipaksa JID** (`@s.whatsapp.net`): kalau `primary`/`participantAlt`/`remoteJidAlt` punya sisi JID, itu yang dipakai; LID cuma disimpan ke `global.lidCache` sebagai pemetaan. Kalau setelah resolve masih LID dan tidak ada di cache, nilainya `null` (bukan LID mentah).
+- `lib/groupEvents.js` — `phoneOf()` resolve LID lewat `global.lidCache`, `mentionJid()` hanya pakai `phoneJid`/`jid` (atau LID yang berhasil di-resolve), tidak lagi mengembalikan LID mentah.
+- `lib/print.js` — `formatSender()`/`resolvePhoneFromJid()` resolve LID → JID dulu; kalau gagal tampilkan `?` daripada LID mentah.
+- `database.json` direset (backup lama disimpan lokal, **tidak** di-commit).
+- `.gitignore` — tambah `database.json.backup`, `*.json.backup`, `database.json.*.bak`.
+
+## Jebakan
+- **Jangan commit `database.json.backup`.** Data user (nomor HP, nama grup, settings) bukan source. Sempat ter-commit di `131ece5` dan harus di-rewrite + force push untuk dibersihkan.
+- **`m.chat`/`m.sender` bisa `null` sekarang.** Plugin yang memakai JID mentah tanpa cek null bisa error; selalu cek `if (!m.chat) return`.
+- **`global.lidCache` hanya hidup di memori** — kosong lagi setelah restart. Jangan andalkan isinya sebagai sumber kebenaran; pakai `participantAlt`/`remoteJidAlt` dari event sebagai sumber utama.
+- **Rewrite history bikin commit hash lama tetap bisa diakses di GitHub** (raw view masih 200) sampai GitHub gc/support purge. Kalau data benar-benar sensitif, minta purge ke GitHub Support.
+
+## Verifikasi
+- `git ls-tree -r --name-only origin/main | grep -i database` → kosong.
+- `raw.githubusercontent.com/.../cb468f0/database.json.backup` → 404 (commit baru bersih); commit lama masih 200 (cache GitHub).
+- `pm2 restart` → bot `online`, 35 plugin termuat, terhubung tanpa pairing ulang.
+- `node --check` pada `lib/simple.js`, `lib/groupEvents.js`, `lib/print.js` → lolos.
+
+---
+
 # FIX LOG - Ganti nama bot jadi Reze-MD (2026-10-22)
 
 ## Perubahan
@@ -712,3 +739,35 @@ Benefit: tidak ada spawn lokal → bypass cgroup limitation sepenuhnya.
 
 → Test end-to-end tunggu user submit sticker animasi untuk konfirmasi
 
+
+---
+
+# Fix: plugin postch / sendch (posting ke Channel WA)
+
+## Masalah
+Plugin template kiriman (ESM) tidak kompatibel dengan struktur repo:
+- Repo punya loader CJS (`main.js normalizePlugin`): `module.exports = { name, command, aliases, permissions, run }`, `run: async (m, { conn, text, usedPrefix })`.
+- Template pakai `ctx.message/ctx.event/ctx.client/ctx.react/ctx.reply` dan `ctx.client.message.upload()` untuk build proto manual — API itu tidak ada di wrapper repo ini.
+- Upload manual proto `{ videoMessage: {...spread uploaded} }` untuk channel tidak perlu: `conn.newsletter.send()` (zapo-js) menerima bentuk `WaSendMediaMessage` dan mengurus upload plaintext ke CDN newsletter sendiri lewat `buildNewsletterMessageContent` (metadata url/directPath/fileSha256 diisi internal; `caption` di level content, bukan di proto).
+
+## Perubahan file
+- `plugins/postch.js` (baru): `command: /^(postch|sendch|upch)$/i`, ownerOnly.
+  - CHANNEL_JID = `120363420643650987@newsletter`.
+  - Text: `conn.newsletter.send(JID, { type:'text', text })`.
+  - Media reply (pakai `resolveMediaPayload` + `downloadMediaMessage`):
+    - audio/ptt → convert opus (libusb ffmpeg) `{ type:'audio', ptt:true, mimetype:'audio/ogg; codecs=opus' }` → voice note.
+    - video/gif/ptv → `{ type:'video'|'ptv', gifPlayback }` + thumbnail ffmpeg frame-1 → sharp 72px (fallback jpegThumbnail pesan asli; thumbnail gagal = skip, bukan gagal kirim).
+    - image → sharp JPEG q90 + thumb 64px.
+    - document → `{ type:'document', fileName }`.
+    - sticker → `image/webp`.
+  - Bukan media → teks gabungan (caption + teks pesan yang di-reply).
+  - React ⏳/✅/❎ via `conn.message.send(m.chat, { type:'reaction', emoji, target:m })`.
+
+## Bukti verifikasi
+- `node --check plugins/postch.js` → OK.
+- `node -e require` → name/aliases/command regex match postch|sendch|upch, `run: function`.
+- Zap0 API check: `downloadMediaMessage` & `resolveMediaPayload` ter-eksport; `conn.newsletter.send` ada di `WaNewsletterMessagingOps` (dist/client/newsletter/messaging.d.ts).
+- Hot reload: `logs/out.log` 20:33:24 & 20:33:51 `♻️ Reload plugin 'postch.js'` tanpa syntax error (error 20:32:51 'format tidak dikenali' hanya karena watcher fire saat file setengah tertulis).
+- Bot tetap online (pm2 Reze-MD up 2h).
+
+→ Test end-to-end: kirim `.postch <teks>` / reply media ke bot dari nomor owner.
