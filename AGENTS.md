@@ -90,5 +90,5 @@ const { downloadMediaMessage } = require('zapo-js')
 - CommonJS (`require`/`module.exports`), bukan ESM.
 - Gaya santai tanpa semicolon di banyak tempat — ikuti file yang diedit.
 - Pesan error user diawali emoji (❌/⏳), komentar & log console berbahasa Indonesia.
-- API downloader pihak ketiga: `api.alfisy.my.id` (lihat plugins/tiktok.js, instagram.js).
+- API downloader pihak ketiga: `alsya.svazer.eu.cc` (lihat plugins/tiktok.js, instagram.js).
 - Shortcut yang disengaja ditandai komentar `ponytail:` — jangan hapus tanpa paham batasannya.

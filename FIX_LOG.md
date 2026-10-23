@@ -1,3 +1,28 @@
+# FIX LOG - pindah API ke alsya.svazer.eu.cc (2026-10-23)
+
+## Gejala / root cause
+- Base API bot masih `api.alfisy.my.id`. Domain itu sudah dipindah/diganti, jadi semua plugin yang bergantung padanya (download, OCR, meme, removebg, hd, upload, pinterest, lyrics, translate) ikut ke domain lama.
+
+## Perubahan
+- Ganti seluruh `https://api.alfisy.my.id` → `https://alsya.svazer.eu.cc` di 11 file:
+  `lib/translate.js`, `lib/upload.js`, `plugins/{ocr,hd,meme,play,removebg,pinterest,tiktok,instagram,lyrics}.js`.
+- `AGENTS.md`: catatan "API downloader pihak ketiga" ikut diperbarui.
+- Nama var `ALFISY` di `lib/translate.js` sengaja **tidak** di-rename — cuma label internal, tidak memengaruhi perilaku; rename akan menyentuh `viaAlfisy`/ekspor.
+
+## Jebakan
+- **Domain baru bukan clone beda isi** — dicek satu-satu: `/api/search/yts`, `/api/search/lyrics` balas 200; `/api/tools/ocr`, `/api/maker/meme` balas 400 (butuh payload, sama seperti domain lama); `/api/tools/removebg` 404 di kedua domain (endpoint memang tidak ada).
+- **Translate tetap 429 di domain baru.** Bukan efek ganti domain: `translate` di domain lama dan baru dua-duanya balas `success:false, error:"Request failed with status code 429"` untuk input yang sama. Upstream Google yang menolak IP server, jadi rantai fallback (`google-proxy` → LibreTranslate → MyMemory) yang menutupi, bukan perubahan domain.
+- **`removebg` 404 di kedua domain** — plugin `!removebg` memang sudah tidak berfungsi sebelum perubahan ini; jangan salah kaitkan dengan ganti domain.
+- Domain lama masih hidup (root 200). Kalau nanti perlu balik, cukup `sed` arah sebaliknya.
+
+## Verifikasi
+- `grep -rn 'api\.alfisy\.my\.id' --include='*.js' .` → **kosong**.
+- `grep -rn 'alsya\.svazer\.eu\.cc' --include='*.js' .` → 11 hit (10 konstanta + 1 komentar di `lib/translate.js`).
+- `node --check` pada 11 file yang diubah → lolos semua.
+- Probe langsung: `/api/search/yts?q=test` → HTTP 200, `/api/search/lyrics?q=test` → HTTP 200 pada domain baru.
+
+---
+
 # FIX LOG - paksa pakai JID, jangan LID (2026-10-22)
 
 ## Gejala / root cause

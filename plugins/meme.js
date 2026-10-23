@@ -7,7 +7,7 @@ const { writeExif } = require('../lib/exif')
 const TMP = path.join(__dirname, '..', 'tmp')
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 
-const API = 'https://api.alfisy.my.id/api/maker/meme'
+const API = 'https://alsya.svazer.eu.cc/api/maker/meme'
 
 // ponytail: API wajib punya minimal satu dari atas/bawah (kalau dua-duanya
 // kosong → HTTP 400), makanya default diisi ' '. Error datang sebagai JSON,

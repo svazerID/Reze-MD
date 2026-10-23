@@ -5,7 +5,7 @@ const { downloadMedia } = require('../lib/mediaProcessor')
 const TMP = path.join(__dirname, '..', 'tmp')
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 
-const API = 'https://api.alfisy.my.id/api/tools/removebg'
+const API = 'https://alsya.svazer.eu.cc/api/tools/removebg'
 
 // ponytail: field wajib 'file' (bukan 'image'/'img' → 400 "Unexpected field"),
 // hanya JPG/PNG/WEBP. Hasil = PNG ber-alpha. Error datang sebagai JSON,

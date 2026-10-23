@@ -26,7 +26,7 @@ let handler = async (m, { conn, args, command }) => {
     if (!uploaded.url) return m.reply('❌ Gagal upload gambar.')
 
     // 3. HD enlarge
-    let hdUrl = `https://api.alfisy.my.id/api/tools/imglarger?url=${encodeURIComponent(uploaded.url)}&type=enlarger`
+    let hdUrl = `https://alsya.svazer.eu.cc/api/tools/imglarger?url=${encodeURIComponent(uploaded.url)}&type=enlarger`
     let hdRes = await fetch(hdUrl)
     let hdData = await hdRes.json()
     if (!hdData.status || !hdData.data?.output_url) {

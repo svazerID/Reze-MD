@@ -34,7 +34,7 @@ if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 // Search pakai API alfisy (YTS Search). Ini satu-satunya jalur yang jalan dari
 // IP datacenter: yt-dlp kena "Sign in to confirm you're not a bot" di semua
 // player_client, jadi ytsearch dibuang.
-let SEARCH_API = 'https://api.alfisy.my.id/api/search/yts'
+let SEARCH_API = 'https://alsya.svazer.eu.cc/api/search/yts'
 let SEARCH_TIMEOUT_MS = 25_000
 
 // Download audio lewat VidsSave (scraper di vidssave-plugin.js).

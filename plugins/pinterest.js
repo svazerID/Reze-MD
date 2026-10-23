@@ -2,7 +2,7 @@ let fs = require('fs')
 let path = require('path')
 let { acquireFfmpegSlot } = require('../lib/mediaProcessor')
 
-const API = 'https://api.alfisy.my.id/api'
+const API = 'https://alsya.svazer.eu.cc/api'
 const TMP = path.join(__dirname, '..', 'tmp')
 if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 

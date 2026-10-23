@@ -15,7 +15,7 @@ module.exports = {
 
         await m.reply('⏳ Mengambil konten Instagram...')
         try {
-            let res = await fetch(`https://api.alfisy.my.id/api/download/aio?url=${encodeURIComponent(url)}`)
+            let res = await fetch(`https://alsya.svazer.eu.cc/api/download/aio?url=${encodeURIComponent(url)}`)
             let json = await res.json()
             if (!json.status) return m.reply('❌ Gagal: ' + (json.message || 'unknown error'))
 

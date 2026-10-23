@@ -1,4 +1,4 @@
-const API = 'https://api.alfisy.my.id/api/search/lyrics'
+const API = 'https://alsya.svazer.eu.cc/api/search/lyrics'
 const MAX_CHARS = 3500
 
 module.exports = {

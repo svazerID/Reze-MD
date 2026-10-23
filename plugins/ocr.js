@@ -1,7 +1,7 @@
 const { downloadMedia } = require('../lib/mediaProcessor')
 const { upload } = require('../lib/upload')
 
-const API = 'https://api.alfisy.my.id/api/tools/ocr'
+const API = 'https://alsya.svazer.eu.cc/api/tools/ocr'
 
 // OCR: GET ?imageUrl=<url publik>. Jalur base64 tidak dipakai karena API ini
 // cuma terima GET (POST 404) dan URL-nya pecah untuk payload besar.
