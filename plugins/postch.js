@@ -50,25 +50,6 @@ function toOpus(buffer) {
   return ffmpegToBuffer(['-i', 'pipe:0', '-c:a', 'libopus', '-b:a', '128k', '-vbr', 'on', '-f', 'ogg', 'pipe:1'], buffer)
 }
 
-// ambil 1 frame video buat thumbnail (2 percobaan: offset 0.7s, lalu frame 1)
-function extractFrame(buffer) {
-  return ffmpegToBuffer(['-i', 'pipe:0', '-frames:v', '1', '-f', 'image2', '-c:v', 'mjpeg', 'pipe:1'], buffer)
-}
-
-async function buildVideoThumbnail(videoBuf, fallbackThumb) {
-  try {
-    let raw = await extractFrame(videoBuf).catch(() => null)
-    if (!raw && fallbackThumb) {
-      return Buffer.isBuffer(fallbackThumb) ? fallbackThumb : Buffer.from(fallbackThumb)
-    }
-    if (!raw) return null
-    const sharp = (await import('sharp')).default
-    return await sharp(raw).resize({ width: 72 }).jpeg({ quality: 60 }).toBuffer()
-  } catch {
-    return null
-  }
-}
-
 let handler = async (m, { conn, text, usedPrefix, command }) => {
   let caption = (text || '').trim()
   let quoted = m.quoted?.message || null
@@ -105,7 +86,15 @@ let handler = async (m, { conn, text, usedPrefix, command }) => {
           content = { type: 'audio', media, mimetype: 'audio/ogg; codecs=opus', ptt: true }
         } else if (kind === 'video' || kind === 'gif' || kind === 'ptv') {
           let orig = quoted.videoMessage || {}
-          let thumb = await buildVideoThumbnail(media, orig.jpegThumbnail)
+          // Jalur newsletter TIDAK memproses thumbnail sendiri, jadi tetap harus
+          // dikirim eksplisit. Pakai processor media-utils, bukan ffmpeg+sharp
+          // manual; kalau gagal, pakai thumbnail asli dari video yang di-reply.
+          let thumb = null
+          try {
+            let res = await global.mediaProcessor.generateVideoThumbnail(media, 320)
+            if (res?.jpegThumbnail?.length) thumb = Buffer.from(res.jpegThumbnail)
+          } catch {}
+          if (!thumb && orig.jpegThumbnail) thumb = Buffer.from(orig.jpegThumbnail)
           content = {
             type: kind === 'ptv' ? 'ptv' : 'video',
             media,

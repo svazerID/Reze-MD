@@ -1,3 +1,47 @@
+# FIX LOG - video: semua jalur kirim pakai media-utils, kode manual dihapus (2026-10-25)
+
+## Gejala / permintaan
+- Setelah `postch` dipindah ke media-utils, masih ada kode pemrosesan video manual di `lib/mediaProcessor.js` (`generateVideoThumbnail`, `runThumb`, `probeMedia`, helper file temp) yang tidak dipakai lagi karena `WaClient` sudah memakai `createMediaProcessor()`.
+
+## Perubahan
+- `lib/mediaProcessor.js`: `generateVideoThumbnail`, `runThumb`, `probeMedia`, `writeTempInput`, `cleanupTemp`, dan require `fluent-ffmpeg` dihapus. Sisa export: `generateImageThumbnail`, `readInput`, `downloadMedia`, `acquireFfmpegSlot` (antrean ffmpeg masih dipakai sticker & pinterest).
+- Inventaris jalur video: `sticker.js` (sticker→video), `tiktok.js`, `instagram.js`, `pinterest.js` (m3u8 remux), `hidetag.js` (video + mentions), `send.js` (re-send video/document), `postch.js` (channel) — semuanya lewat `conn.message.send`/`newsletter.send`. Hanya jalur newsletter yang butuh thumbnail eksplisit; yang lain ditangani processor otomatis.
+- `pinterest.js` tetap meremux HLS `.m3u8` sendiri — itu pengambilan media, bukan pemrosesan thumbnail, jadi tidak diganti.
+
+## Jebakan
+- **`fluent-ffmpeg` tetap dipakai** oleh `lib/exif.js` dan `plugins/pinterest.js`; jangan hapus dependensinya hanya karena mediaProcessor tidak lagi memakainya.
+- **Jangan hapus `acquireFfmpegSlot`.** Sticker (`webpAnimToMp4`) dan Pinterest (remux m3u8) masih memakainya untuk membatasi ffmpeg di container `cpu.max=2`.
+- `generateImageThumbnail` masih ada walau `WaClient` tidak memakainya (media-utils yang dipakai); dibiarkan karena bukan bagian video.
+
+## Verifikasi
+- `grep` tidak menemukan pemakai `generateVideoThumbnail`/`probeMedia` selain `global.mediaProcessor` milik media-utils.
+- `node --check lib/mediaProcessor.js plugins/postch.js` → lolos.
+- Export library: `generateImageThumbnail, readInput, downloadMedia, acquireFfmpegSlot`.
+- Bot live tetap jalan; perubahan lib hanya menghapus fungsi mati, jalur yang dipakai plugin tidak berubah.
+
+---
+
+# FIX LOG - postch: thumbnail video lewat media-utils (2026-10-25)
+
+## Gejala / permintaan
+- `postch` masih membuat thumbnail video sendiri: spawn ffmpeg (`extractFrame`) lalu resize dengan `sharp`. Kode duplikat dari processor media dan tidak ikut peningkatan yang ada di `@zapo-js/media-utils`.
+
+## Perubahan
+- `plugins/postch.js`: `extractFrame()` dan `buildVideoThumbnail()` dihapus. Thumbnail video sekarang dari `global.mediaProcessor.generateVideoThumbnail(media, 320)`; kalau null, fallback ke `jpegThumbnail` milik video yang di-reply.
+- `ffmpegToBuffer()` tetap ada karena dipakai konversi voice note ke opus.
+
+## Jebakan
+- **Jalur `newsletter.send` tidak memproses thumbnail sendiri.** Berbeda dengan `message.send`, builder newsletter hanya menyalin `jpegThumbnail` yang diberikan; kalau dihapus total, video di channel kehilangan preview. Karena itu thumbnail tetap dikirim eksplisit, hanya sumbernya diganti media-utils.
+- `generateVideoThumbnail` menerima `Uint8Array`, jadi `Buffer` dari download aman; hasilnya `{ jpegThumbnail, width, height }` dengan jpegThumbnail berupa `Uint8Array` — konversi ke `Buffer` sebelum dimasukkan ke content.
+
+## Verifikasi
+- `node --check plugins/postch.js` → lolos.
+- Processor diuji langsung: buffer mp4 640×360 → JPEG 5.062 byte (320×180).
+- Bot live: `♻️ Reload plugin 'postch.js'` tanpa error.
+- Belum diuji posting video nyata ke channel (butuh interaksi WhatsApp).
+
+---
+
 # FIX LOG - media: pakai @zapo-js/media-utils (2026-10-25)
 
 ## Gejala / permintaan
