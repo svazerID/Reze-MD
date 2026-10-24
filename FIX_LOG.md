@@ -1,3 +1,180 @@
+# FIX LOG - totalpesan: tampilkan semua member & semua fitur (2026-10-24)
+
+## Gejala / permintaan
+- Output `!totalpesan` memotong daftar di 50 member dengan teks "…dan N member lainnya.", dan `!totalpesan fitur` memotong di 30 fitur. User minta semuanya ditampilkan.
+
+## Perubahan
+- Batas 50 member dan 30 fitur **dihapus**. Seluruh member dan seluruh fitur yang tercatat selalu ditampilkan.
+- Ditambah `chunkLines()` — pemecah daftar jadi beberapa pesan pada batas ~3500 karakter (potong di batas baris, tidak memutus satu entri). Semua potongan dikirim berurutan; `quote` hanya di pesan pertama, `mentions` disertakan di semua potongan supaya nama tetap ter-resolve.
+- `MAX_CHARS = 3500` diekspor sebagai `plugin.MAX_CHARS` untuk test.
+
+## Jebakan
+- **Jangan cuma hapus `slice()` lalu kirim satu pesan raksasa.** WhatsApp punya batas panjang pesan; grup besar (ratusan member) akan gagal terkirim atau terpotong di sisi server. Pemecahan dilakukan sendiri supaya utuh dan bisa diverifikasi.
+- **Potong di batas baris, bukan sembarang indeks karakter.** Kalau dipotong di tengah, satu entri jadi dua potongan rusak (`*42.` tanpa nama/nilai).
+- **`quote: undefined` boleh, tapi jangan `quote: m` di semua potongan** — tiap potongan akan mengutip pesan yang sama dan tampak seperti spam balasan. Hanya potongan pertama yang mengutip.
+- **`mentions` harus ikut di setiap potongan.** Kalau hanya di potongan pertama, `@nomor` di potongan berikutnya tampil sebagai teks mentah (tidak jadi nama/tag) pada beberapa klien.
+- Baris judul (`head`) ikut dimasukkan ke daftar sebelum dipecah, supaya kalau grup sangat besar judul tetap muncul di potongan pertama dan tidak terpisah.
+
+## Verifikasi
+- `node --check plugins/totalpesan.js` → lolos.
+- `grep -n "lainnya" plugins/totalpesan.js` → **kosong** (tidak ada teks pemotongan lagi).
+- Uji grup besar, 300 member: **5 lolos / 0 gagal** — 300 member tampil semua (dihitung dari baris `*N.*`), 4 pesan terkirim / 12.080 karakter, mentions mencakup 300 nomor, tiap potongan ≤ batas, tidak ada teks "lainnya".
+- Uji fitur besar, 120 command: **5 lolos / 0 gagal** — 120 fitur tampil semua, 2 pesan / 6.253 karakter, urutan tetap menurun (terbanyak di atas), tidak ada entri terpotong di tengah.
+- Regresi: **18/18** (dasar), **10/10** (ketahanan hook), **46/46** (fitur/prefix), **44/44** (prefix asli `config.js` + plugin asli).
+- Bot live (`pm2` app `Reze-MD`): reload bersih tanpa error.
+
+---
+
+# FIX LOG - totalpesan: hitung pemakaian fitur/command (2026-10-24)
+
+## Gejala / permintaan
+- `!totalpesan` baru menghitung pesan biasa; pemakaian fitur/command belum tercatat sama sekali.
+- Butuh statistik fitur mana yang paling sering dipakai dan siapa yang memakainya.
+
+## Fitur
+- `!totalpesan` — tetap: daftar jumlah pesan per member (command tidak dihitung sebagai pesan).
+- `!totalpesan fitur` (alias `cmd`, `command`) — daftar fitur/command yang dipakai, urut terbanyak: nama fitur, jumlah pemakaian, dan sampai 3 pengguna teratas per fitur. Maksimal 30 fitur ditampilkan.
+- Data: `global.db.data.totalPesan[<gid>].__fitur` → `{ <namaCommand>: { total, oleh: { <nomor>: jumlah }, terakhir } }`. Kunci diawali `__` supaya tidak bentrok dengan kunci nomor HP member.
+- Deteksi prefix memakai `global.prefix` dari `config.js` apa adanya (RegExp lebar: `! # $ % + £ ¢ € ¥ ^ ° = ¶ ∆ × ÷ π √ ✓ © ® : ; ? & . -`), bukan daftar karakter hardcode.
+- Plugin `customPrefix` (cth `exec` dengan `> ` / `$ ` / `>> `) ikut terdeteksi dan dicatat.
+
+## Jebakan
+- **Jangan hardcode daftar prefix.** `config.js` memakai RegExp dengan banyak karakter tidak lazim (`©`, `®`, `π`, `∆`, dst). Salinan manual pasti ketinggalan. Selalu baca `global.prefix` dan tangani 3 bentuk: RegExp, array, string.
+- **`/` BUKAN prefix di repo ini.** Banyak bot lain memakai `/`, di sini tidak. Sudah diuji: `/ping` dianggap pesan biasa.
+- **Plugin `customPrefix` tidak lewat `global.prefix`.** Kalau hanya cek `global.prefix`, semua pemakaian `exec` (`> 1+1`, `$ ls`) tidak terhitung. Harus ikut iterasi `global.plugins` dan tes `p.customPrefix`.
+- **Isi `exec` adalah kode shell/JS, bukan nama command.** Awalnya `>> echo hi` tercatat sebagai fitur `echo`. Bukan salah secara teknis, tapi statistik jadi penuh nama perintah shell acak. Sekarang plugin `customPrefix` dikelompokkan di bawah nama pluginnya (`exec`).
+- **Command tidak boleh ikut dihitung sebagai pesan.** Kalau dihitung dua-duanya, orang yang banyak memakai command terlihat paling aktif sekaligus menggelembungkan total pesan. Sekarang: command → hitungan fitur, pesan biasa → hitungan pesan.
+- **Kunci `__fitur` harus disaring** saat menyusun daftar member, kalau tidak akan muncul `@__fitur: 0 pesan` di output.
+- **Hook `all` tetap harus tidak pernah throw** (dipanggil tiap pesan; kalau throw, owner dibanjiri laporan error). Semua akses pakai optional chaining + normalisasi `Number(v) || 0`.
+- Helper `getFitur()` memanggil `getChat()` yang dideklarasikan sesudahnya — aman karena `function declaration` di-hoist, tapi jangan diubah jadi `const getChat = () => {}` (akan TDZ error).
+
+## Verifikasi
+- `node --check plugins/totalpesan.js` → lolos.
+- Suite fitur: **46 lolos / 0 gagal** — deteksi 10 prefix umum, customPrefix (`>`, `>>`, `=>`, `$`), ekstraksi nama fitur (lowercase, bukan command → null), command tercatat sebagai fitur (3× ping: P1=2, P2=1), pesan biasa tetap terpisah, 4 fitur berbeda terpisah, `exec` jadi satu label (bukan `echo`), output `!totalpesan fitur` (judul/total/nama/mentions), `__fitur` tidak bocor ke daftar member, kasus grup kosong.
+- Prefix asli dari `config.js` (bukan salinan) + 38 plugin asli dimuat lewat loader: **44 lolos / 0 gagal** — semua 24 karakter prefix dikenali; `halo semua`, `Rp 5000`, `1 + 1 = 2`, `ok!`, `5000 rupiah`, `😀 halo` tetap pesan biasa; `!menu`, `.warn`, `#tagall`, `!listwarn`, `!totalpesan`, `!autogc`, `!kick`, `> 1+1`, `$ ls` terdeteksi dengan nama benar.
+- Regresi suite lama: **18/18** (dasar) dan **10/10** (ketahanan hook).
+- End-to-end lewat `lib/simple.smsg` + loader + dispatch `all`: 6 pesan + 8 command → `!totalpesan` menampilkan `Total: 6 pesan dari 2 orang (Ani 4, Budi 2)`; `!totalpesan fitur` menampilkan `Total: 10 kali dari 7 fitur berbeda` dengan rincian menu/ping/exec/listwarn/warn/totalpesan/tagall beserta penggunanya.
+- Bot live (`pm2` app `Reze-MD`): reload bersih tanpa error setelah perubahan.
+- **Belum diuji dari trafik WhatsApp nyata** untuk mode fitur (diuji lewat injeksi event sintetis).
+
+---
+
+# FIX LOG - fitur totalpesan (statistik pesan per member) (2026-10-24)
+
+## Gejala / permintaan
+- Butuh leaderboard jumlah pesan per member grup, untuk melihat siapa yang paling aktif.
+- Draf awal menghitung di dalam command, `participants.map(p => p.id)`, dan `m.reply(text, null, { contextInfo })` — ketiganya tidak jalan di repo ini (lihat Jebakan).
+
+## Fitur
+- Plugin baru `plugins/totalpesan.js` (format objek, sesuai `AGENTS.md`).
+- `!totalpesan` (alias `totalchat`, `topchat`, `leaderboard`) — tampilkan total pesan per member, urut terbanyak.
+- Output: total pesan grup, jumlah orang, nama member (dari metadata grup), nomor, dan jumlah pesannya. Maksimal 50 baris teratas supaya pesan tidak kepanjangan.
+- Penyimpanan: `global.db.data.totalPesan[<groupJid>][<nomor>]` (sesuai draf), konsisten dengan konvensi key per-grup lain.
+- Member grup yang belum pernah kirim pesan tetap terdaftar dengan nilai 0 saat command dijalankan.
+- Bot sendiri tidak dimasukkan ke daftar.
+
+## Jebakan
+- **Penghitungan HARUS di hook `all`, bukan di command.** Kalau menghitung di dalam `run`, hanya pesan yang berisi perintah yang terhitung — pesan biasa tidak pernah masuk. `handler.js` memanggil `hook.all` sebelum parsing prefix/command, jadi di situlah tempatnya.
+- **Hook `all` jalan untuk SETIAP pesan.** Kalau dia throw, `handler.js` mengirim laporan error ke owner tiap pesan → banjir. Semua field harus dicek null (`m.chat`, `m.sender`, `m.text`), dan nilai count yang rusak dinormalisasi (`Number(v) || 0`). Sudah diuji dengan 10 input aneh (semua lolos).
+- **`participants` di repo ini pakai `p.jid`/`p.phoneNumber`/`p.lid`, BUKAN `p.id`.** Draf yang memakai `p.id` akan menghasilkan `undefined` semua.
+- **`m.chat` dan `m.sender` bisa `null`** kalau LID tidak bisa di-resolve (lihat `lib/simple.js`). Hook harus `return` diam-diam, jangan crash, dan jangan menyimpan kunci `'null'`.
+- **`m.reply(text, null, { contextInfo })` bukan signature yang dipakai repo ini.** `m.reply` di `lib/simple.js` cuma `(text, opts)`, dan `contextInfo`/`externalAdReply` sengaja dihindari. Untuk mention, pakai `conn.message.send(chat, teks, { quote: m, mentions: [...] })`.
+- **Jangan panggil `global.db.write()` tiap pesan.** Itu menulis seluruh `database.json` ke disk setiap pesan masuk. `main.js` sudah menyimpan tiap 60 detik (`setInterval`), jadi cukup andalkan itu.
+- **Command tidak dihitung sebagai pesan.** Tanpa filter prefix, member yang banyak memakai command terlihat paling aktif. Filter memakai `global.prefix` (bisa RegExp/array/string).
+- **Pesan `fromMe` tidak dihitung** — kalau tidak, pesan bot sendiri ikut masuk statistik.
+- **Hanya grup `@g.us`** yang dihitung; chat pribadi diabaikan.
+- `fs.watch` bisa me-reload plugin saat file masih setengah tertulis, sehingga log sempat menampilkan `Plugin 'totalpesan.js' format tidak dikenali` tepat sebelum `➕ Plugin baru`. Itu artefak saat menulis file, bukan bug plugin — reload berikutnya bersih.
+
+## Verifikasi
+- `node --check plugins/totalpesan.js` → lolos.
+- Test utama (stub `global.db` + `conn`): **18 lolos / 0 gagal** — hitung pesan biasa, command tidak dihitung, pesan bot tidak dihitung, chat pribadi diabaikan, `sender` null tidak crash, output (total/jumlah orang/nama/urutan/mentions), member tanpa pesan terdaftar 0, LID resolve ke nomor HP, urutan menurun, grup kosong.
+- Test ketahanan hook `all`: **10 lolos / 0 gagal** — `chat`/`sender`/`text` undefined, chat LID, chat bukan grup, objek kosong, `totalPesan` rusak (array), entri chat berupa string, nilai count `'abc'` → jadi 1 (bukan NaN).
+- Uji jalur handler sungguhan (replika `handler.js` + `lib/simple.smsg` + loader `normalizePlugin`): 3 pesan + 1 command → **tercatat 3**, lalu `!totalpesan` menampilkan `Total: 3 pesan dari 1 orang` dengan `*1.* Tester @6283191972077: *3* pesan`.
+- Persistensi: `global.db.write()` menyimpan `totalPesan` dan `read()` memuatnya kembali → **utuh**.
+- Loader: `normalizePlugin` → `names=totalpesan, totalchat, topchat, leaderboard`, `tags=group`, `groupOnly=true`, `all=function`, `run=function`.
+- Bot live (`pm2` app `Reze-MD`): `➕ Plugin baru 'totalpesan.js'` lalu reload bersih tanpa error; proses `online`.
+- Catatan: `totalPesan` di `database.json` masih kosong saat dicek karena belum ada pesan grup masuk setelah plugin dimuat — diuji lewat injeksi sintetis, bukan dari trafik nyata.
+- **`!warn` sudah terbukti jalan di grup nyata** (entri `warn:120363320882068747@g.us` dengan count 1, alasan `@123292035862671 hama`, nomor ter-resolve ke `6283191972077`).
+
+---
+
+# FIX LOG - fitur warn member + auto kick + delwarn/listwarn (2026-10-23)
+
+## Gejala / permintaan
+- Admin grup butuh cara menegur member berulang tanpa langsung kick, plus sanksi otomatis di batas tertentu.
+- Belum ada sistem warn di repo; `grep -rn "warn"` hanya menemukan log level (`console.warn`) dan `ConsoleLogger('warn')`.
+
+## Fitur
+- Plugin baru `plugins/warn.js` (format objek, sesuai `AGENTS.md`).
+- `!warn @member [alasan]` — tambah warn. Target bisa mention, reply, atau nomor (`!warn 628xxx alasan`). Bisa beberapa target sekaligus.
+- **5× warn = auto kick** dari grup. Setelah berhasil di-kick, entri warn member itu dihapus (kalau di-add lagi, mulai dari 0).
+- `!delwarn @member` — hapus seluruh warn member (juga menerima reply/nomor, dan banyak target).
+- `!listwarn` — daftar member yang kena warn, urut dari warn terbanyak: nama (kalau ada di metadata), nomor, jumlah, waktu terakhir, alasan terakhir.
+- Alias: `warning`, `peringatan`, `hapuswarn`, `daftarwarn`.
+- Penyimpanan: `global.db.data.settings['warn:<groupJid>']` → `{ <kunci>: { count, lastAt, by, reasons: [] } }` (konvensi sama seperti `liststore:<chat>` dan `ge:<groupJid>`). Riwayat alasan disimpan maksimal 5 terakhir, tiap alasan maksimal 120 karakter.
+
+## Jebakan
+- **Jangan simpan kunci berbasis LID.** `m.sender`/participant bisa datang sebagai `@lid`. Kunci penyimpanan memakai nomor HP yang di-resolve lewat `global.lidCache`, supaya warn untuk orang yang sama tidak terpecah dua entri.
+- **Tapi `global.lidCache` hanya hidup di memori** dan kosong setelah restart. Kalau LID tidak ter-resolve, entri TETAP disimpan dengan kunci LID (jangan dibuang) — lebih baik warning tercatat daripada hilang. Konsekuensi: nomor yang sama bisa punya dua entri kalau pernah di-warn lewat PN dan lewat LID yang belum ter-resolve; `!delwarn` bisa membersihkannya.
+- **Jangan menebak domain JID dari panjang angka.** LID bisa 8 digit (mirip nomor pendek), jadi `jidOf()` sekarang menyimpan domain asli JID saat warn dibuat (`domainOf()`), bukan menebak `@s.whatsapp.net`. Salah tebak menghasilkan JID palsu (`99887766@s.whatsapp.net`) yang bukan member mana pun.
+- **Saat kick, kirim semua varian JID** (PN, jid, lid, plus JID asli target). Metadata grup bisa meng-address member sebagai LID; kalau hanya nomor HP yang dikirim, kick bisa gagal padahal membernya ada.
+- **Kick gagal tidak boleh menghapus warn.** Kalau bot bukan admin (atau `removeParticipants` error), entri tetap tersimpan di batas (5/5) sehingga warning berikutnya mencoba kick lagi — tidak ada sanksi yang hilang diam-diam. Pesan ke grup menyebut `Gagal kick ... (jadikan bot admin)`.
+- **Status disimpan setelah aksi berhasil**, bukan sebelum — pelajaran yang sama dengan `autogc.js`: menandai selesai lebih dulu membuat kegagalan tidak pernah diulang.
+- **Proteksi wajib:** bot sendiri, owner bot, dan admin grup tidak bisa di-warn (dilewati dengan pesan alasan). Tanpa ini, admin bisa tidak sengaja meng-kick sesama admin.
+- **`removeParticipants` mengembalikan array hasil per-JID** (`{ jid, status: 'ok'|'error', code }`), bukan throw. Kick dianggap berhasil kalau ADA minimal satu `status === 'ok'` — jangan cek `every()` karena mengirim beberapa varian JID membuat sebagian wajar gagal.
+
+## Verifikasi
+- `node --check plugins/warn.js` → lolos.
+- Test utama (stub `global.db` + `conn`): **39 lolos / 0 gagal** — help, warn via mention/reply/nomor, akumulasi 1→5, auto kick di warn ke-5, entri dihapus setelah kick, proteksi bot/owner/admin, `listwarn` (isi + kosong), `delwarn` (termasuk yang tidak punya warn), kick gagal lalu sukses di percobaan berikutnya, multi-target, batas riwayat alasan.
+- Test LID: **8 lolos / 0 gagal** — warn datang sebagai `@lid` disimpan dengan nomor HP; warn LID + PN bergabung jadi satu entri; saat kick, varian LID dan PN dua-duanya dikirim.
+- Test LID tak ter-resolve (`lidCache` kosong): **7 lolos / 0 gagal** — kick tetap menargetkan LID asli, tidak menghasilkan JID `@s.whatsapp.net` palsu, `delwarn` bisa menghapus entri LID.
+- Loader: `normalizePlugin` → `names=warn, warning, peringatan, delwarn, hapuswarn, listwarn, daftarwarn`, `tags=group`, `group/admin/botAdmin=true`, `run=function`.
+- Bot live (`pm2` app `Reze-MD`): `➕ Plugin baru 'warn.js'` lalu `♻️ Reload plugin 'warn.js'` tanpa error setelah versi final; proses `online`. Error `format tidak dikenali` di log (15:54) berasal dari versi antara saat pengembangan, bukan versi akhir.
+- **Belum diuji langsung lewat WhatsApp** (butuh grup nyata dengan bot admin).
+
+---
+
+# FIX LOG - fitur auto tutup/buka grup terjadwal (2026-10-23)
+
+## Gejala / permintaan
+- Belum ada cara menutup grup otomatis pada jam tertentu (mis. malam) lalu membukanya lagi pagi, tanpa admin harus ingat.
+- Draf awal yang dikirim memakai `moment-timezone` + `node-schedule` dan `global.jadibots` — **ketiganya tidak ada di repo ini** (lihat Jebakan).
+
+## Fitur
+- Plugin baru `plugins/autogc.js` (format objek, sesuai `AGENTS.md`).
+- Command: `!autogc <jamTutup> <jamBuka>` — cth `!autogc 21 5` (tutup 21:00, buka 05:00 WIB).
+- Format jam: `21` · `21:30` · `2100` · `05.00` · `24:00`.
+- Jadwal mingguan opsional: `!autogc "senin 22:00" "selasa 06:00"`.
+- Subcommand: `on` / `off` (nonaktifkan tanpa hapus jadwal), `close` / `open` (ubah sekarang juga), `hapus` (buang jadwal), `status`, `cek`.
+- Zona waktu WIB (Asia/Jakarta), dihitung manual dari offset UTC+7 — tidak butuh library timezone.
+- Scheduler `setInterval` 30 detik di file plugin yang sama, tanpa dependensi tambahan.
+- Mendukung bot utama + semua sesi jadibot (`lib/jadibot` → `sessions` Map), mencoba tiap koneksi sampai ada yang berhasil (bot utama bisa bukan admin di grup itu).
+- Saat jadwal disetel dan sekarang sudah di luar/dalam jendela, setting grup langsung diselaraskan (tidak menunggu jam jadwal berikutnya).
+
+## Jebakan
+- **`moment-timezone` dan `node-schedule` tidak terpasang** dan sengaja tidak ditambahkan — cukup `Date` + offset UTC+7 dan `setInterval`. Kalau mau pakai `node-schedule`, tambahkan dulu ke `package.json` (repo ini pakai `npm`/`bun`, bukan dependensi implisit).
+- **`global.jadibots` tidak ada di repo ini.** Koneksi jadibot disimpan di `lib/jadibot.js` sebagai `Map` bernama `sessions` (`ownerJid -> { client, phone, status }`). Draf awal yang memakai `global.jadibots` akan selalu kosong → fitur diam total untuk jadibot.
+- **API grup zapo berbeda dari Baileys.** Tidak ada `groupSettingUpdate`. Yang dipakai: `conn.group.setSetting(jid, 'announcement', true/false)` (sama seperti `plugins/group.js`).
+- **`node --check` saja tidak cukup** untuk plugin format objek: `module.exports` harus objek dengan `.run`. Sempat diekspor sebagai `handler` (fungsi) sehingga `normalizePlugin` masuk jalur format lama dan `permissions` (`groupOnly`/`adminOnly`/`botAdmin`) terabaikan.
+- **Jangan menandai status selesai sebelum `setSetting` berhasil.** Versi awal menulis `cfg.status` lebih dulu; kalau bot bukan admin, kegagalan terbaca "sudah selesai" dan grup tidak pernah disusulkan sampai besok. Sekarang status hanya ditulis setelah berhasil, gagal dicatat di `cfg.lastError` dan dicoba lagi tiap 30 detik.
+- **Jangan cocokkan status hanya pada menit persis jadwal.** Kalau bot mati/reload melewati jam jadwal, pengecekan berbasis "menit sekarang == menit jadwal" tidak akan pernah menyusul. Sekarang status dihitung dari jendela waktu (`sinceLast(tutup)` vs `sinceLast(buka)`).
+- **Bandingkan juga HARI, bukan cuma jam.** Untuk jadwal mingguan, Senin 06:00 harus `opened` walau jadwal tutup Senin 22:00. Perbandingan jam saja membuat grup tertutup/terbuka di waktu yang salah.
+- **Timer wajib dibersihkan saat reload.** `fs.watch` di `main.js` me-reload plugin tiap file berubah; tanpa `clearInterval(global.autoGcTimer)` timer lama menumpuk. Diuji 25× reload → tetap 1 interval hidup.
+- **`Date.now` tidak bisa dipalsukan dengan menimpa `Date.now`** untuk `new Date()`; karena itu `nowWib()` menerima clock yang bisa diganti lewat `plugin.setClock()` untuk keperluan test.
+- Alias hari jangan ditebak dari 3 huruf pertama: `minggu` tidak diawali `mgg`, dan `min` ambigu. Dipakai tabel alias eksplisit (`mgg`/`min`/`ahad` → minggu, dst).
+- Grup `@lid`/chat pribadi di `global.db.data.chats` dilewati (`endsWith('@g.us')`).
+
+## Verifikasi
+- `node --check plugins/autogc.js` → lolos.
+- Test logika (stub `global.db` + `conn`, waktu disuntik): **77 lolos / 0 gagal** — meliputi parser jam, help/status, set jadwal, tick tutup/buka, anti-dobel, off/on/hapus, close/open manual, jendela lewat tengah malam, jadwal mingguan, dan validasi input.
+- Regresi khusus: **10 lolos / 0 gagal** — tick yang terlewat tetap menyusul, dan kegagalan `setSetting` tidak ditandai selesai lalu berhasil di percobaan berikutnya.
+- Kebocoran timer: 25× reload → **1 interval hidup**.
+- Loader: `normalizePlugin` mengembalikan `name=autogc`, `names=autogc, autogrup, autotutup`, `tags=group`, `group/admin/botAdmin=true`, `run=function`.
+- Bot live (`pm2` app `Reze-MD`): hot-reload mencatat `➕ Plugin baru 'autogc.js'` / `♻️ Reload plugin 'autogc.js'` tanpa error; menu menampilkan `• !autogc | autogrup | autotutup`.
+- **Belum diuji langsung lewat WhatsApp** (butuh grup nyata + bot admin). Yang sudah terverifikasi adalah logika, integrasi loader, dan pemuatan di proses live.
+
+---
+
 # FIX LOG - pindah API ke alsya.svazer.eu.cc (2026-10-23)
 
 ## Gejala / root cause
