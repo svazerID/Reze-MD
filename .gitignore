@@ -9,3 +9,5 @@ data/
 database.json.backup
 database.json.*.bak
 *.json.backup
+bun.lock
+package-lock.json

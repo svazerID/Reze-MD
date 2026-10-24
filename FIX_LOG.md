@@ -1,3 +1,43 @@
+# FIX LOG - crm: relay ulang pesan reply + ekspor kode raw zapo (2026-10-25)
+
+## Gejala / permintaan
+- Ada plugin `crm.js` dari bot Baileys: reply pesan lalu relay ulang persis tipenya, sekaligus kirim file `.js` berisi cuplikan `conn.relayMessage(...)`. Diminta disempurnakan dan dipasang di Reze-MD.
+
+## Perubahan
+- `plugins/crm.js` (baru, format objek, owner-only): `.crm` pada pesan yang di-reply.
+  - Membuka wrapper `ephemeralMessage`/`viewOnceMessage`/`viewOnceMessageV2`/`viewOnceMessageV2Extension`/`documentWithCaptionMessage`, membuang properti internal (`_`-prefixed) dan fungsi, lalu relay via `conn.message.send(m.chat, rawProto)`.
+  - Mengirim dokumen `<TipePesan>.js` berisi `=> conn.message.send(…)` yang bisa langsung ditempel ke `exec` (`=>` didukung plugin exec).
+- Generator kode: indentasi 4 spasi, `Buffer`/`Uint8Array` → `Buffer.from("…", "base64")`, `bigint` → `5n`, guard circular & kedalaman, key non-identifier di-quote.
+- Nama file dari field pesan pertama; `messageContextInfo`/`senderKeyDistributionMessage` diabaikan.
+- Relay gagal tidak membatalkan pengiriman file — error dicatat di caption.
+- Tidak ada file temp/folder `debug/`: dokumen dikirim langsung dari `Buffer`.
+
+## Jebakan
+- **zapo tidak punya `relayMessage`/`generateWAMessageFromContent`.** `client.message.send` menerima raw `Proto.IMessage` apa adanya; konten tanpa field `type` dianggap raw (lihat `dist/client/messaging/messages.js`).
+- **`conversation` tidak perlu diubah ke `extendedTextMessage`** seperti versi Baileys — zapo mendukung raw conversation.
+- Field berawalan `_` adalah dekorasi internal zapo (mis. `_stats`) dan dibuang di semua level; jangan ikut di-relay.
+- Wrapper view-once/ephemeral **dibuka** (mengikuti perilaku plugin asal), jadi relay mengirim konten dalamnya, bukan wrapper-nya.
+- Relay bisa ditolak server untuk tipe pesan lama/invalid; file kode tetap dikirim supaya bisa dianalisis.
+- Raw send melewati validasi typed builder — plugin ini owner-only dan tidak boleh dibuka untuk publik.
+- Fallback sumber quote: `m.quoted.message` → `m.quotedCtx.quotedMessage`.
+
+## Verifikasi
+- `node --check plugins/crm.js` → lolos.
+- 15 uji dengan `conn` tiruan: teks asli, wrapper ephemeral, nama file, bytes base64, metadata diabaikan, `_stats`/fungsi dibuang, bigint, circular, tanpa reply, relay gagal (dokumen tetap terkirim + warning), fallback `quotedCtx` → **15 pass, 0 fail**.
+- Contoh output file:
+  ```
+  => conn.message.send(
+    m.chat,
+    {
+      conversation: "halo dunia"
+    },
+    {}
+  )
+  ```
+- Hot reload: `➕ Plugin baru 'crm.js'` tanpa error.
+
+---
+
 # FIX LOG - adminonly jadi per grup, bisa diatur admin grup (2026-10-25)
 
 ## Gejala / permintaan
