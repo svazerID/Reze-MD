@@ -48,6 +48,9 @@ Object.assign(globalThis.WebSocket, Ws)
 for (const k of ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED']) globalThis.WebSocket[k] = Ws[k]
 const { ConsoleLogger, createStore, WaClient } = require('zapo-js')
 const { createSqliteStore } = require('@zapo-js/store-sqlite')
+// Plugin VoIP: sumber event `voip_call_incoming` + `conn.voip.rejectCall()`.
+// Tanpa plugin ini, panggilan hanya dilaporkan lewat event `call` yang read-only.
+const { voipPlugin } = require('@zapo-js/voip')
 
 function normalizePhone(num) {
   return String(num || '').replace(/[^0-9]/g, '')
@@ -109,7 +112,8 @@ global.conn = new WaClient(
     store: global.store,
     sessionId: 'default',
     recoverFromClientTooOld: true,
-    media: { processor: global.mediaProcessor }
+    media: { processor: global.mediaProcessor },
+    plugins: [voipPlugin()]
   },
   new ConsoleLogger('warn')
 )
@@ -379,6 +383,19 @@ conn.on('picture', (event) => {
   let ts = event.timestampSeconds
   if (ts && Date.now() / 1000 - ts > 60) return
   groupEvents.handlePictureEvent(conn, event).catch(e => console.error('[groupEvent]', e.message))
+})
+
+// --- Anticall: tolak panggilan masuk kalau setting menyala ---
+// Setting per sesi bot: settings[meJid].anticall (diubah lewat plugin anticall.js).
+conn.on('voip_call_incoming', async call => {
+  let meJid = conn.getCredentials()?.meJid || ''
+  if (!global.db.data.settings[meJid]?.anticall) return
+  try {
+    await conn.voip.rejectCall(call.callId)
+    console.log(chalk.gray(`📞 Panggilan ditolak (anticall): ${call.peerJid || call.callCreator || '-'}`))
+  } catch (e) {
+    console.error('[anticall] gagal menolak panggilan:', e.message || e)
+  }
 })
 
 // --- Graceful shutdown ---

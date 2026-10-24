@@ -60,6 +60,8 @@ module.exports = {
       let setting = global.db.data.settings[meJid]
       if (typeof setting !== 'object') global.db.data.settings[meJid] = setting = {}
       if (!('self' in setting)) setting.self = false
+      if (!('groupOnly' in setting)) setting.groupOnly = false
+      if (!('anticall' in setting)) setting.anticall = false
     } catch (e) {
       console.error(e)
     }
@@ -117,9 +119,13 @@ module.exports = {
     }
     if (!plugin) return
 
+    // Mode grup saja: non-owner di chat pribadi diabaikan tanpa balasan (owner tetap bebas).
+    if (setting.groupOnly && !m.isGroup && !isOwner) return
+
     // --- Cek permission ---
     let metadata
-    if (m.isGroup && (plugin.admin || plugin.botAdmin || plugin.participants)) {
+    // adminOnly per grup butuh metadata untuk tahu siapa admin, jadi selalu ambil di grup.
+    if (m.isGroup && (plugin.admin || plugin.botAdmin || plugin.participants || global.db.data.chats[m.chat]?.adminOnly)) {
       metadata = await this.group.queryGroupMetadata(m.chat).catch(() => null)
     } else if (m.isGroup && !global.lidCache[m.chat]) {
       // ponytail: query metadata sekali per grup untuk populate LID cache
@@ -143,6 +149,9 @@ module.exports = {
       [p.phoneNumber, p.jid, p.lid].some(j => j && normalize(j) === normTarget)
     let isAdmin = m.isGroup && metadata?.participants.some(p => matchJid(p, normSender) && p.isAdmin)
     let isBotAdmin = m.isGroup && metadata?.participants.some(p => matchJid(p, normMe) && p.isAdmin)
+
+    // Mode admin saja per grup: hanya admin grup & owner yang dilayani, sisanya diam.
+    if (m.isGroup && global.db.data.chats[m.chat]?.adminOnly && !isOwner && !isAdmin) return
 
     if (plugin.owner && !isOwner) return dfail('owner', m)
     if (plugin.group && !m.isGroup) return dfail('group', m)

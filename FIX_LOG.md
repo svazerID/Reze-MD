@@ -1,3 +1,141 @@
+# FIX LOG - adminonly jadi per grup, bisa diatur admin grup (2026-10-25)
+
+## Gejala / permintaan
+- `adminonly` sebelumnya saklar global per sesi bot: sekali ON, seluruh grup kena. Yang diminta: pembatasan admin berlaku **per grup** dan bisa diatur oleh admin grup itu sendiri, bukan hanya owner bot.
+
+## Perubahan
+- `handler.js`:
+  - hapus default & gerbang global `setting.adminOnly`.
+  - metadata grup di-query juga saat `chats[m.chat].adminOnly` menyala (syarat agar admin terdeteksi).
+  - gerbang baru: `if (m.isGroup && global.db.data.chats[m.chat]?.adminOnly && !isOwner && !isAdmin) return`
+- `plugins/adminonly.js`: setting pindah ke `global.db.data.chats[<groupJid>].adminOnly` (default off). Permission plugin menjadi `groupOnly`; hak ubah dicek manual dari metadata — **admin grup atau owner**, bukan owner-only.
+
+## Jebakan
+- **Key lama `settings[meJid].adminOnly` tidak dibaca lagi.** Sisa key (nilai `false` di database) aman dibiarkan; kalau dulu pernah ON, grup yang ingin dikunci harus di-`on`-kan ulang satu per satu.
+- `adminOnly` hanya menyentuh grup. Chat pribadi tetap diatur `groupOnly`; jangan menambahkan cek admin untuk private karena tidak ada admin di sana.
+- Setelah ON, **hanya admin grup/owner yang bisa mematikannya** — perintah member biasa di-`return` diam oleh gerbang sebelum `plugin.run`.
+- Metadata wajib diambil saat mode aktif; kalau tidak, `isAdmin` selalu `false` dan admin ikut terblokir.
+- Deteksi admin memakai `phoneOf` (resolve LID via `lidCache`) untuk `phoneNumber`/`jid`/`lid`, sama seperti `warn`/`antilink`.
+
+## Verifikasi
+- `node --check handler.js plugins/adminonly.js` → lolos.
+- Uji `plugin.run` dengan metadata tiruan: member ditolak, admin menyalakan grupnya sendiri, status menampilkan ON, owner non-admin bisa mematikan, grup lain tidak terpengaruh → **5 pass, 0 fail**.
+- `pm2 restart Reze-MD`: `adminonly.js` termuat dan `🟢 Terhubung ke WhatsApp!`.
+
+---
+
+# FIX LOG - antilink grup lain: hapus pesan + warn otomatis (2026-10-25)
+
+## Gejala / permintaan
+- Link undangan grup WhatsApp lain bebas dikirim di grup. Butuh saklar on/off per grup: pesan berisi link grup lain dihapus otomatis lalu pengirimnya diberi warn.
+
+## Perubahan
+- `plugins/antilink.js` (baru, format objek):
+  - `all` hook: mendeteksi `groupInviteMessage` ke grup lain dan teks `chat.whatsapp.com/<code>` (termasuk `/invite/`, http/https/www). Link ke grup **ini sendiri** dilewatkan.
+  - Pesan pelanggar di-revoke (`{ type: 'revoke', target }`), lalu warn bertambah di store `warn.js` yang sama (5× warn = auto kick), plus balasan `⚠️ Antilink … Warn: n/5`.
+  - `run`: `.antilink on|off` / `.antilinkgc`, khusus admin grup atau owner (dicek manual dari metadata, bukan flag `permissions.adminOnly`, supaya owner tidak wajib jadi admin). Tanpa argumen menampilkan status.
+- Setting per grup di `global.db.data.chats[<groupJid>].antilink` (default off, sama seperti `autoGc`).
+
+## Jebakan
+- **Kode undangan grup sendiri hanya bisa di-query admin** (`queryInviteCode` → 403 kalau bot bukan admin). Kalau gagal, deteksi teks link **fail-open** (tidak menghapus apa pun) supaya link grup sendiri tidak ikut terhapus; kode di-cache 10 menit (gagal: 60 detik).
+- `groupInviteMessage` dibandingkan lewat `groupJid`, bukan kode — tidak butuh query dan tetap akurat walau link lama/rotasi. Payload tanpa `groupJid` fallback ke perbandingan `inviteCode`.
+- Revoke butuh bot admin; kalau gagal, warn **tidak** diberikan (log sekali per grup). `.antilink on` tetap mengingatkan kalau bot bukan admin.
+- Admin grup dan owner bot dikecualikan: tidak dihapus, tidak di-warn (warn.js juga menolak me-warn admin/owner dan admin tidak bisa di-kick).
+- `target.participant` diambil dari `m.key.participant` (bisa LID) — jangan diganti `m.sender` hasil resolusi, karena revoke mencocokkan key asli pesan.
+- Hook `all` berjalan **sebelum** gerbang `self`/`groupOnly`/`adminOnly` dan sebelum `if (!m.text) return`, jadi moderasi tetap jalan untuk pesan media dan saat mode pembatasan lain aktif.
+- **`all` hook tidak menerima `conn` di parameter kedua** — handler memanggil `hook.all.call(conn, m, { chatUpdate, dirname, __filename })`. Pakai `function (m) { return enforce(m, this) }`, bukan `(m, { conn })`.
+- Sender yang LID-nya tidak ter-resolve (`m.sender` null) dilewati — tidak bisa revoke/warn dengan aman.
+- Balasan warn dikirim tanpa `quote` karena pesan sumbernya sudah dihapus.
+
+## Verifikasi
+- `node --check plugins/antilink.js` → lolos.
+- Uji logika dengan `conn` tiruan (9 kasus): link grup lain dihapus + warn 1; link grup sendiri aman; invite terstruktur grup lain dihapus; invite grup sendiri aman; pengirim admin dilewati; warn ke-5 memicu kick; `antilink off` tanpa aksi → **9 pass, 0 fail**.
+- Hot reload: log `➕ Plugin baru 'antilink.js'` tanpa error.
+
+---
+
+# FIX LOG - mode admin saja: on/off lewat `.adminonly` (2026-10-25)
+
+## Gejala / permintaan
+- Butuh saklar on/off agar bot hanya bisa dipakai admin grup dan owner. Member biasa (termasuk di private) tidak dilayani.
+
+## Perubahan
+- `handler.js`: default `setting.adminOnly = false`; metadata grup sekarang juga diambil saat `setting.adminOnly` menyala (tanpa itu admin tidak terdeteksi dan semua orang terblokir); gerbang setelah `isAdmin` dihitung:
+  ```js
+  if (setting.adminOnly && !isOwner && !isAdmin) return
+  ```
+  Non-admin/non-owner diabaikan **tanpa balasan**; di private hanya owner yang lolos.
+- `plugins/adminonly.js` (baru, format objek): `.adminonly on` / `.adminonly off`, alias `.admonly`, owner-only; tanpa argumen menampilkan status.
+
+## Jebakan
+- **Metadata grup wajib diambil saat mode ini aktif.** Sebelumnya metadata hanya di-query untuk plugin `admin`/`botAdmin`/`participants` atau saat LID cache grup masih kosong; kalau cache sudah terisi, `isAdmin` akan selalu `false` dan admin ikut terblokir. Kondisi query sudah ditambah `setting.adminOnly`.
+- Gerbang memakai `isAdmin` dari metadata yang dihitung dengan `phoneNumber`/`jid`/`lid` — admin yang tampil sebagai LID tetap dikenali.
+- Gerbang diletakkan **sebelum** cek `plugin.owner`, jadi non-admin yang mencoba perintah owner mendapat diam, bukan pesan "khusus owner".
+- Owner tetap lolos di mana pun (grup maupun private), sama seperti `groupOnly`.
+- Kedua mode bisa aktif bersamaan: `groupOnly` memblokir private non-owner, `adminOnly` memblokir member non-admin di grup.
+
+## Verifikasi
+- `node --check handler.js plugins/adminonly.js` → lolos.
+- `pm2 restart Reze-MD`: `adminonly.js` muncul di daftar plugin dan `🟢 Terhubung ke WhatsApp!` tanpa error.
+- Uji manual: `.adminonly on` → member biasa tidak dibalas (grup & private), admin grup dan owner tetap dilayani; `.adminonly off` → semua normal.
+
+---
+
+# FIX LOG - anticall: on/off tolak panggilan otomatis (2026-10-25)
+
+## Gejala / permintaan
+- Bot tidak punya cara menolak panggilan masuk. Butuh saklar on/off agar panggilan (voice/video) otomatis ditolak saat mode aktif.
+
+## Perubahan
+- `package.json`: tambah `@zapo-js/voip` (1.4.0).
+- `main.js`: `voipPlugin()` didaftarkan ke `WaClientOptions.plugins`; listener `voip_call_incoming` menolak via `conn.voip.rejectCall(call.callId)` bila `settings[meJid].anticall` menyala, lalu log `📞 Panggilan ditolak (anticall)`.
+- `handler.js`: default `setting.anticall = false`.
+- `plugins/anticall.js` (baru, format objek): `.anticall on` / `.anticall off`, alias `.acall`, owner-only; tanpa argumen menampilkan status. Menyimpan setting lalu `global.db.write()`.
+
+## Jebakan
+- **Event `call` bawaan zapo hanya read-only** — tidak ada API answer/reject tanpa plugin VoIP. Karena itu `voipPlugin()` wajib didaftarkan; tanpa itu `conn.voip` dan `voip_call_incoming` tidak ada.
+- **Peer media `@roamhq/wrtc` & `libmlow-wasm-fork` tidak perlu dipasang** untuk sekadar menolak: keduanya dimuat lazy saat panggilan benar-benar di-*accept*/media lokal dipakai. Smoke test: `conn.voip.rejectCall` bertipe function tanpa dua paket itu.
+- `rejectCall` default memakai alasan `Declined`. Untuk group call, method yang sama menolak undangan, bukan mengakhiri panggilan orang lain.
+- Listener dipasang sekali saat modul dimuat (instance `conn` tidak berganti saat reconnect, sama seperti listener grup).
+- Jadibot belum tercakup: `lib/jadibot.js` membuat `WaClient` sendiri tanpa `voipPlugin()`, jadi panggilan ke sesi jadibot tetap berdering.
+- Setting default di `handler.js` hanya terinisialisasi setelah ada pesan masuk perintah; sebelum itu `settings[meJid]` mungkin belum ada — listener memakai optional chaining sehingga aman (dianggap OFF).
+
+## Verifikasi
+- `node --check main.js handler.js plugins/anticall.js` → lolos.
+- Smoke test instansiasi `WaClient` + `voipPlugin()` di store /tmp: `voip coordinator: true rejectCall: function`.
+- `pm2 restart Reze-MD`: log `anticall.js` di daftar plugin dan `🟢 Terhubung ke WhatsApp!` tanpa error.
+- Uji manual: `.anticall on` lalu panggil bot dari nomor lain → panggilan langsung ditolak dan log anticall muncul; `.anticall off` → panggilan berdering normal.
+
+---
+
+# FIX LOG - mode grup saja: on/off lewat `.grouponly`, owner tetap bebas di private (2026-10-25)
+
+## Gejala / permintaan
+- Bot bisa dipakai siapa saja di chat pribadi. Butuh saklar on/off agar bot hanya melayani grup, dengan pengecualian owner yang tetap bisa memakai bot di chat pribadi.
+
+## Perubahan
+- `plugins/grouponly.js` (baru, format objek): `.grouponly on` / `.grouponly off`, alias `.gconly`, owner-only. Tanpa argumen menampilkan status. Menyimpan `setting.groupOnly` lalu `global.db.write()`.
+- `handler.js`: inisialisasi default `setting.groupOnly = false`; gerbang setelah plugin cocok:
+  ```js
+  if (setting.groupOnly && !m.isGroup && !isOwner) return
+  ```
+  Non-owner di chat pribadi **diabaikan tanpa balasan apa pun** (bukan pesan penolakan), owner tetap bebas.
+- State disimpan per sesi bot (`settings[meJid]`), sama seperti `self.js`.
+
+## Jebakan
+- **`handler.js` tidak ikut hot-reload.** `fs.watch` hanya memantau folder `plugins/`; perubahan handler butuh `pm2 restart`.
+- Gerbang ditaruh **setelah** plugin cocok (`if (!plugin) return`), supaya bot tidak membalas obrolan biasa di private.
+- `isOwner` sudah memperhitungkan LID → nomor via `lidCache`, jadi owner ber-LID tetap dikenali.
+- Cek `plugin.owner` tetap berjalan setelah gerbang; non-owner di private hanya di-`return` diam-diam, tidak dapat pesan "khusus owner" maupun "grup saja".
+- `liststore` auto-reply tidak terpengaruh karena hanya berjalan di grup.
+
+## Verifikasi
+- `node --check handler.js plugins/grouponly.js` → lolos.
+- `pm2 restart Reze-MD`: log memuat `grouponly.js` dan `🟢 Terhubung ke WhatsApp!` tanpa error.
+- Uji manual di WhatsApp: `.gconly on` → non-owner private tidak dibalas sama sekali, owner private & grup tetap jalan; `.gconly off` → private kembali normal.
+
+---
+
 # FIX LOG - video: semua jalur kirim pakai media-utils, kode manual dihapus (2026-10-25)
 
 ## Gejala / permintaan
