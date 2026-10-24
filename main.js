@@ -99,19 +99,17 @@ global.store = createStore({
     messages: 'none', threads: 'none', contacts: 'sqlite'
   }
 })
-let mediaProcessor = require('./lib/mediaProcessor')
+// Processor media resmi: thumbnail (sharp), probe/waveform (ffmpeg/ffprobe),
+// deteksi mimetype (file-type), plus sticker thumbnail. Stateless & aman
+// dipakai bersama bot utama + jadibot (docs: guides/multi-session).
+const { createMediaProcessor } = require('@zapo-js/media-utils')
+global.mediaProcessor = createMediaProcessor()
 global.conn = new WaClient(
   {
     store: global.store,
     sessionId: 'default',
     recoverFromClientTooOld: true,
-    media: {
-      processor: {
-        generateImageThumbnail: mediaProcessor.generateImageThumbnail,
-        generateVideoThumbnail: mediaProcessor.generateVideoThumbnail,
-        probeMedia: mediaProcessor.probeMedia
-      }
-    }
+    media: { processor: global.mediaProcessor }
   },
   new ConsoleLogger('warn')
 )

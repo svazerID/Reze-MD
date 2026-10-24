@@ -17,7 +17,7 @@ let handler = async (m, { conn, args, command }) => {
   let buffer = await downloadMedia(m.quoted?.message || msg.message)
   if (!buffer) return m.reply('Gagal download gambar.')
 
-  let tmpIn = path.join(TMP, `hd_${Date.now()}.jpg`)
+  let tmpIn = path.join(TMP, `hd_${Date.now()}_${Math.random().toString(36).slice(2)}.jpg`)
   fs.writeFileSync(tmpIn, buffer)
 
   try {
@@ -37,7 +37,7 @@ let handler = async (m, { conn, args, command }) => {
     let hdImgRes = await fetch(hdData.data.output_url)
     let hdBuffer = Buffer.from(await hdImgRes.arrayBuffer())
 
-    let tmpOut = path.join(TMP, `hd_out_${Date.now()}.png`)
+    let tmpOut = path.join(TMP, `hd_out_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
     fs.writeFileSync(tmpOut, hdBuffer)
 
     await conn.message.send(m.chat, {

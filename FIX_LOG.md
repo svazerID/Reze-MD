@@ -1,3 +1,47 @@
+# FIX LOG - media: pakai @zapo-js/media-utils (2026-10-25)
+
+## Gejala / permintaan
+- Processor media masih buatan sendiri (`lib/mediaProcessor.js`) dan hanya mengisi 3 method: image thumbnail, video thumbnail, probe. Tidak ada `detectMimetype`, sticker thumbnail, maupun waveform, sehingga media tanpa `mimetype` eksplisit bisa gagal terkirim dan preview sticker tidak ada.
+
+## Perubahan
+- Dependensi baru: `@zapo-js/media-utils` (+ `file-type` untuk deteksi mimetype otomatis).
+- `main.js`: `media.processor` sekarang `createMediaProcessor()` dari media-utils, disimpan sebagai `global.mediaProcessor`.
+- `lib/jadibot.js`: tiap `WaClient` jadibot memakai `global.mediaProcessor` yang sama (processor stateless, aman dibagi; docs: guides/multi-session).
+- `lib/mediaProcessor.js` **tetap ada** karena plugin masih memakai `downloadMedia()` dan `acquireFfmpegSlot()`.
+
+## Jebakan
+- **Batas ffmpeg paralel hilang.** `lib/mediaProcessor.js` membatasi 2 ffmpeg bersamaan karena container `cpu.max=2`; media-utils spawn ffmpeg sendiri tanpa batas itu. Kalau muncul stalling saat banyak video/probe bersamaan, itu penyebabnya — perlu wrapper antrean di sekitar `generateVideoThumbnail`/`probeMedia`.
+- **Frame thumbnail video bisa hitam.** Kode lama sengaja seek ke detik ke-1 (bukan frame 0); media-utils memakai frame awal. Kalau thumbnail video hitam muncul lagi, jangan "fix" dengan mengganti processor — periksa perilaku ini dulu.
+- **`normalizeVoiceNote` opt-in** (`=== true`) dan me-re-encode PTT. Jangan dinyalakan tanpa perlu; audio biasa (`ptt: false`) tidak butuh.
+- `file-type` adalah peer dependency opsional, tapi tanpa itu `detectMimetype` tidak jalan dan `mimetype` harus eksplisit di setiap send.
+
+## Verifikasi
+- Metode processor diuji langsung dengan file nyata: `detectMimetype(mp4)` → `video/mp4`; image thumb JPEG 33 KB (736×736); video thumb JPEG 9.9 KB (640×360); probe video `{duration:3, width:640, height:360}`; probe opus `{duration:3.0065}`; waveform 64 byte + durasi 3 dtk; sticker thumb PNG 542 KB; `normalizeVoiceNote` mengembalikan stream.
+- `node --check main.js lib/jadibot.js` → lolos.
+- Bot live (`pm2` app `Reze-MD`): restart bersih, 41 plugin dimuat, `🟢 Terhubung ke WhatsApp!`, tanpa error.
+- Belum diuji kirim media dari trafik WhatsApp nyata; perlu tes `!sticker` / `!hd` / kirim gambar langsung.
+
+---
+
+# FIX LOG - hd: suffix acak nama file sementara (2026-10-25)
+
+## Gejala / permintaan
+- Nama file sementara `hd_<timestamp>.jpg` dan `hd_out_<timestamp>.png` hanya memakai `Date.now()`. Dua permintaan `!hd` yang jatuh di milidetik yang sama akan memakai path yang sama: file saling menimpa dan pembersihan milik satu permintaan bisa menghapus file yang sedang dipakai permintaan lain.
+
+## Perubahan
+- `plugins/hd.js`: `tmpIn` dan `tmpOut` sekarang `hd_<timestamp>_<random>.jpg` / `hd_out_<timestamp>_<random>.png`, pola sama dengan `play.js` (`Math.random().toString(36).slice(2)`).
+
+## Jebakan
+- **Jangan cukup andalkan `Date.now()` di nama temp.** Bot memproses banyak chat; dua event bisa datang pada milidetik yang sama.
+- Suffix acak bukan pengganti pembersihan: file tetap harus dihapus di `finally` supaya `tmp/` tidak menumpuk.
+
+## Verifikasi
+- `node --check plugins/hd.js` → lolos.
+- Uji 200.000 nama dengan timestamp + suffix acak: **0 tabrakan**.
+- Bot live (`pm2` app `Reze-MD`): dua event `♻️ Reload plugin 'hd.js'` muncul, tanpa error.
+
+---
+
 # FIX LOG - play: cookie + JS runtime untuk yt-dlp (2026-10-25)
 
 ## Gejala / permintaan
