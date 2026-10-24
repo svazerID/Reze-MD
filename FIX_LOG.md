@@ -1,3 +1,29 @@
+# FIX LOG - play: cookie + JS runtime untuk yt-dlp (2026-10-25)
+
+## Gejala / permintaan
+- yt-dlp sudah terpasang, tapi `play` tetap gagal download. Tanpa cookie: `Sign in to confirm you're not a bot`. Setelah `.yt-cookies.txt` ditambahkan dan dioper manual: `-F` hanya menampilkan storyboard (`sb0`-`sb3`) lalu `Requested format is not available`.
+- Log verbose: `JS runtimes: none`, signature + n-challenge solving failed, YouTube memaksa SABR streaming.
+
+## Perubahan
+- `plugins/play.js` → `downloadAudio()` mengoper `--cookies <root>/.yt-cookies.txt` (kalau file ada) dan `--js-runtimes <runtime>:<path>` ke yt-dlp.
+- Path runtime diambil dari `process.execPath` (node/bun yang sedang menjalankan bot). Tidak mengandalkan PATH pm2 dan tidak hardcode `/usr/local/bin/node`.
+- Cookie dicek saat download (bukan saat module load), jadi file yang baru ditambahkan langsung terpakai tanpa reload plugin.
+- Host ini: `pip install -U "yt-dlp[default]"` → menarik `yt-dlp-ejs` 0.8.0. yt-dlp 2026.10.21 di `/usr/local/bin`.
+
+## Jebakan
+- **Cookie saja tidak cukup.** Tanpa JS runtime (EJS), signature/n-challenge gagal dan YouTube hanya memberi storyboard → `Requested format is not available`. Dua-duanya wajib.
+- **`--js-runtimes node` (tanpa path) tetap terdeteksi `none`** di host ini. Harus bentuk `node:/path/absolut`.
+- **Jangan pakai cookie lewat proxy gratis.** `lib/proxyPool.js` hanya untuk request publik VidsSave tanpa kredensial; menyalurkan sesi akun lewat relay pihak ketiga = sesi bisa dicuri.
+- `.yt-cookies.txt` sudah gitignored. Jangan commit atau masukkan ke backup publik.
+
+## Verifikasi
+- `node --check plugins/play.js` → lolos.
+- yt-dlp manual dengan argumen yang sama: `Runtuh - Feby Putri feat. Fiersa Besari (Official Visualizer) | 224 s`. Hasil mp3 6,9 MB, 246 kbps, durasi 224 detik.
+- Kontrol negatif: tanpa cookie tetap kena bot-check; tanpa `--js-runtimes` tetap "Requested format is not available".
+- `require()` plugin belum bisa diuji di host ini karena `node_modules` belum terpasang (`sharp` MODULE_NOT_FOUND). Uji end-to-end harus dilakukan di host bot.
+
+---
+
 # FIX LOG - totalpesan: tampilkan semua member & semua fitur (2026-10-24)
 
 ## Gejala / permintaan

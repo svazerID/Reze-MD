@@ -43,6 +43,23 @@ let SEARCH_TIMEOUT_MS = 25_000
 // tidak ada retry yang menolong - pesan errornya harus jelas ke user.
 let UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
+// Cookie YouTube: wajib di host ini. Tanpa cookie, IP datacenter langsung kena
+// "Sign in to confirm you're not a bot". File di-gitignore karena isinya sesi
+// akun. Cek saat dipakai (bukan saat load) supaya file yang baru ditambahkan
+// langsung terbaca tanpa reload plugin.
+const COOKIES = path.join(__dirname, '..', '.yt-cookies.txt')
+
+// yt-dlp butuh JS runtime untuk solve signature/n-challenge (EJS). Tanpa ini
+// YouTube hanya memberi storyboard -> "Requested format is not available".
+// process.execPath = runtime yang sedang menjalankan bot (node/bun), jadi
+// dijamin ada tanpa bergantung PATH pm2.
+function resolveJsRuntime() {
+  let name = path.basename(process.execPath).toLowerCase()
+  if (/^(node|bun|deno)$/.test(name)) return `${name}:${process.execPath}`
+  return 'node'
+}
+const JS_RUNTIME = resolveJsRuntime()
+
 // yt-dlp: JANGAN andalkan lookup PATH. Di pm2, PATH bisa tidak memuat
 // ~/.bun/bin (dan file di home hilang tiap VM restart), jadi `execFile('yt-dlp')`
 // gagal dengan `spawn yt-dlp ENOENT`. Cari path absolut dulu, baru PATH.
@@ -212,17 +229,17 @@ async function download(url, { retries = 3 } = {}) {
 //
 // yt-dlp didahulukan karena dua alasan: (1) jauh lebih cepat - diukur ~29 MB/s
 // vs 0.3-0.7 MB/s lewat proxy gratis, (2) tidak lewat relay pihak ketiga.
-// Syaratnya cookie akun YouTube (lihat ~/.config/yt-dlp/config) - tanpa itu
-// IP datacenter kena "Sign in to confirm you're not a bot".
+// Syaratnya cookie akun YouTube (.yt-cookies.txt) + JS runtime: tanpa cookie
+// kena bot-check, tanpa JS runtime format streaming disembunyikan YouTube.
 async function downloadAudio(info, base) {
   let ytdlpErr = null
   try {
-    await runYtDlp(
-      ['-x', '--audio-format', 'mp3', '--audio-quality', '0',
-       '--no-warnings', '--socket-timeout', '30', '--retries', '3',
-       '-o', base + '.%(ext)s', info.url],
-      300
-    )
+    let args = ['-x', '--audio-format', 'mp3', '--audio-quality', '0',
+      '--no-warnings', '--socket-timeout', '30', '--retries', '3',
+      '--js-runtimes', JS_RUNTIME]
+    if (fs.existsSync(COOKIES)) args.push('--cookies', COOKIES)
+    args.push('-o', base + '.%(ext)s', info.url)
+    await runYtDlp(args, 300)
     let f = base + '.mp3'
     if (fs.existsSync(f) && fs.statSync(f).size) {
       return { file: f, via: 'yt-dlp', quality: null }
