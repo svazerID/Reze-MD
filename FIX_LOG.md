@@ -1,3 +1,28 @@
+# FIX LOG - upload CDN pindah ke svazer-upload.vercel.app (2026-10-26)
+
+## Gejala / root cause
+- `.hd` gagal dengan `Upload gagal: {"status":false,"message":"Failed to upload to CDN","error":"Request failed with status code 500"}`.
+- Reproduksi pakai `curl` dengan JPEG valid: `alsya.svazer.eu.cc/api/tools/upload` balas **500** ("Failed to upload to CDN"), dan `cdn-alsya.vercel.app/api/upload` juga **500** ("An error occurred during upload"). Jadi rusak di storage/CDN upstream, bukan di URL atau file kiriman.
+- `svazer-upload.vercel.app/api/upload` sehat: balas `{ success, url, blobUrl, filename, size, mimetype }`.
+
+## Perubahan
+- `lib/upload.js`: endpoint → `https://svazer-upload.vercel.app/api/upload`; validasi `data.success` + `data.url`; `url` diambil dari `data.url` (bukan `data.urls.direct`).
+- `plugins/hd.js`: `output_url` dari imglarger sekarang berupa **data: URI**, bukan URL biasa. Ekstensi & mimetype hasil ikut ditentukan dari `content-type`/prefix data URI (output nyata JPEG, sebelumnya dipaksa `.png`/`image/png`).
+- `README.md`: contoh URL upload disesuaikan.
+
+## Jebakan
+- Bentuk respons endpoint baru beda: `success`/`url` di root, bukan `status`/`urls.direct`. Jangan pakai cek lama.
+- `fetch()` Node menerima `data:` URI, jadi `fetch(hdData.data.output_url)` tetap jalan tanpa perubahan lain.
+- imglarger mengembalikan JPEG walau `type=enlarger`; jangan hardcode PNG.
+- `lib/drive.js` punya `upload()` sendiri (Google Drive) — tidak terkait dan tidak diubah.
+
+## Verifikasi
+- `node --check lib/upload.js` dan `node --check plugins/hd.js` → lolos.
+- `upload('./input.jpg')` → `{status:true,url:"https://svazer-upload.vercel.app/file/…jpg",size:36662,mimetype:"image/jpeg"}`.
+- Alur HD penuh: imglarger `200 status:true`, `output_url` data URI JPEG, download hasil 297295 byte dengan magic `ffd8ff`.
+
+---
+
 # FIX LOG - crm: relay ulang pesan reply + ekspor kode raw zapo (2026-10-25)
 
 ## Gejala / permintaan

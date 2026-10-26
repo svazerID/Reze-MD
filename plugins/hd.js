@@ -33,17 +33,20 @@ let handler = async (m, { conn, args, command }) => {
       return m.reply('❌ Gagal memproses HD.')
     }
 
-    // 4. Download hasil HD
+    // 4. Download hasil HD (output_url bisa URL biasa atau data: URI)
     let hdImgRes = await fetch(hdData.data.output_url)
     let hdBuffer = Buffer.from(await hdImgRes.arrayBuffer())
+    let hdMime = hdImgRes.headers.get('content-type')
+      || (hdData.data.output_url.startsWith('data:') ? hdData.data.output_url.slice(5).split(';')[0] : 'image/jpeg')
+    let hdExt = hdMime.includes('png') ? 'png' : 'jpg'
 
-    let tmpOut = path.join(TMP, `hd_out_${Date.now()}_${Math.random().toString(36).slice(2)}.png`)
+    let tmpOut = path.join(TMP, `hd_out_${Date.now()}_${Math.random().toString(36).slice(2)}.${hdExt}`)
     fs.writeFileSync(tmpOut, hdBuffer)
 
     await conn.message.send(m.chat, {
       type: 'image',
       media: tmpOut,
-      mimetype: 'image/png',
+      mimetype: hdMime,
       caption: `✅ HD selesai`
     }, { quote: m })
 
