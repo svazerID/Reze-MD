@@ -233,7 +233,7 @@ const { upload } = require('./lib/upload')
 
 // Dari buffer
 let result = await upload(buffer, 'photo.jpg', 'image/jpeg')
-console.log(result.url) // https://cdn.alfisy.my.id/direct/xxx.jpg
+console.log(result.url) // https://cdn-alsya.vercel.app/direct/xxx.jpg
 
 // Dari file path
 let result = await upload('./photo.jpg')
