@@ -1,3 +1,35 @@
+# FIX LOG - tozapo: plugin convert kode Baileys ke zapo (2026-10-27)
+
+## Gejala / permintaan
+- Butuh cara cepat menerjemahkan snippet bot Baileys ke zapo langsung dari chat, untuk kode gaya CJS maupun ESM.
+- Pola yang belum didukung harus jujur ditandai, bukan dibiarkan lolos seolah sudah jalan.
+
+## Perubahan
+- `plugins/tozapo.js` baru, command `.tozapo` (tag `tools`). Input dari `text` atau reply (`extractText`), hasil dikirim lewat AIRich (`airich.text` + `airich.code` + `highlightJS`), fallback ke fenced code saat AIRich gagal — pola sama dengan `plugins/toesm.js`.
+- Konversi pasti: `makeWASocket` → `new WaClient`, `sendMessage(jid, { text })` → `client.message.send(jid, 'x')`, `sendMessage` media (`image/video/audio/document/sticker`) → payload `{ type, media }`, `ev.on('messages.upsert')` → `client.on('message')`, `ev.on('connection.update')` → `client.on('connection')`.
+- Pola tak didukung (`useMultiFileAuthState`, `creds.update`, `groupMetadata`, `downloadMediaMessage`, `sendPresenceUpdate`, `getContentType`, `messages[n]`, `msg.key.remoteJid`, `relayMessage`, `profilePictureUrl`) dibiarkan utuh dan ditandai `// TODO(zapo): <alasan>`, dirangkum di bawah blok kode.
+- `stripPrefix` menangani payload chat yang ikut menempel prefix + nama command berulang (`.tozapo .tozapo ...`).
+- Driver test inline: `node plugins/tozapo.js --test` (9 kasus, tanpa test framework).
+
+## Jebakan
+- `stripLeadingCommand` di `toesm.js` hardcode `toesm|tocjs`, jadi **tidak bisa dipakai** untuk `tozapo` — dibuat `stripPrefix` sendiri di plugin ini.
+- Regex berjalan di atas kode yang string-nya sudah diganti placeholder (`\u0001<n>\u0001`). Karena itu pencocokan nama event tidak bisa lewat teks asli; placeholder event dikembalikan ke `'message'`/`'connection'` memakai daftar string yang disimpan di `guard.saved`.
+- **Bug yang sempat terjadi:** `restore()` menutup variabel `out` hasil proteksi, bukan `body` hasil replace, jadi semua konversi hilang. Sekarang `restore(current)` wajib menerima string hasil replace.
+- Jangan ganti placeholder `\u0001` jadi NUL (`\0`): `plugins/send.js` pernah rusak jadi binary karena byte NUL liar, dan `read` menolak file tersebut.
+- `require('../config')` di driver test **menggantung** karena `config.js` memasang `fs.watchFile`; driver test memakai default prefix yang sama, tidak load `config.js`.
+- Indentasi: jangan pakai `/\s+/g` untuk merapikan spasi — itu ikut memakan newline dan hilangnya indentasi. Pakai `/(\S) {2,}(\S)/g`.
+
+## Verifikasi
+- `node --check plugins/tozapo.js` lolos.
+- `node plugins/tozapo.js --test` → 9/9 lolos.
+- Uji `run` dengan `conn` tiruan (AIRich sengaja gagal untuk memicu fallback):
+  - Snippet CJS (`useMultiFileAuthState` + `messages.upsert` + `sendMessage` text) → `new WaClient(`, `client.on('message', ...)`, `client.message.send(...)`, 2 TODO, indentasi utuh.
+  - Payload `.tozapo .tozapo await sock.sendMessage(jid, { text: 'halo' })` → `client.message.send(jid, 'halo')` (prefix ganda bersih).
+  - Input kosong → `❌ Masukkan atau reply kode Baileys yang ingin diubah.`
+- Belum diuji ke WhatsApp asli.
+
+---
+
 # FIX LOG - drive: tidak kirim ulang media, cuma link (anti-timeout) (2026-10-27)
 
 ## Gejala / permintaan
