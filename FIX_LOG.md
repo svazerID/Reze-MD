@@ -1,3 +1,113 @@
+# FIX LOG - drive: upload Google Drive selalu "fetch failed" (2026-10-27)
+
+## Gejala
+- `.drive` tidak pernah menghasilkan link Drive (log: `Upload Drive gagal: fetch failed`), padahal uji `lib/drive.js` di proses baru selalu sukses.
+- CDN cadangan menolak file besar (`Upload CDN gagal: Unexpected token 'R', "Request En"...` = HTTP 413), jadi file >~4,5 MB terkirim tanpa link.
+- Uji upload dari *dalam* proses bot menunjukkan cause asli: `UND_ERR_INVALID_ARG: invalid content-length header` pada setiap PUT chunk.
+
+## Akar masalah
+- Beberapa lib (`lib/translate.js`, `lib/vidsaveFetch.js`, `lib/proxyPool.js`) `require('undici')`. Saat modul itu di-load, undici 8.12.3 menjalankan `install()` dan **mengganti `globalThis.fetch`** (`node_modules/undici/index.js:224`).
+- `putChunk` mengirim header `Content-Length` manual. fetch undici 8 menolak header itu (`UND_ERR_INVALID_ARG`) walaupun nilainya benar; proses baru tanpa undici memakai fetch bawaan Node yang permisif, makanya uji terpisah lolos.
+
+## Perubahan
+- `lib/drive.js`:
+  - Hapus `Content-Length` manual di PUT chunk — fetch menghitung sendiri dari Buffer body. `Content-Range` tetap.
+  - `errInfo(e)` menampilkan `e.cause` (code + message) dan `isTransient()` membaca cause; sebelumnya log cuma "fetch failed".
+  - `request()` baru: token refresh & init sesi resumable retry (4 percobaan, delay 2/4/8 dtk).
+  - `putChunk()` retry 6× (sebelumnya 5×).
+
+## Jebakan
+- Jangan set `Content-Length` di fetch mana pun selama package `undici` bisa ter-load; header itu ditolak fetch undici 8.
+- `lib/` tidak ikut hot-reload `fs.watch` (hanya `plugins/`), jadi perubahan ini butuh `pm2 restart Reze-MD`.
+- Balasan "🚫 Silakan masukkan URL Google Drive yang ingin diambil." yang muncul di log grup berasal dari **bot lain** (pengirim ~Svazer), bukan plugin ini.
+- CDN `svazer-upload.vercel.app` dibatasi body Vercel (~4,5 MB); untuk file besar Drive satu-satunya jalur link.
+- `drive-request` = percobaan token/init, `drive-upload` = percobaan PUT chunk; angka `i/tries` adalah nomor percobaan.
+
+## Verifikasi
+- `node --check lib/drive.js` lolos.
+- Reproduksi: proses baru dengan `require('undici')` + upload → `invalid content-length header`; setelah perbaikan → sukses 4,8 dtk.
+- Uji dari dalam proses bot (plugin sementara yang jalan saat load) → `OK https://drive.google.com/...` 3,5 dtk; plugin uji dihapus setelahnya.
+
+---
+
+# FIX LOG - toesm/tocjs: convert CJS ↔ ESM dengan balasan AIRich (2026-10-26)
+
+## Gejala / permintaan
+- Diminta fitur konversi kode CJS ↔ ESM. Contoh yang dikirim memakai class `AIRich` (gaya Baileys) yang tidak ada di repo ini, dan balasannya harus lewat AIRich.
+
+## Perubahan
+- `plugins/toesm.js` (baru, format objek): perintah `.toesm`/`.tocjs`.
+  - Input dari teks setelah command atau reply; fence markdown (```) dibuang otomatis.
+  - Konversi mengikuti regex contoh: destructuring & simple `require`, `module.exports` → `export default`, `exports.nama` → `export const`; arah sebaliknya untuk `import` named/default/namespace, `export default`, `export const`.
+  - Balasan lewat `lib/airich.js`: `airich.text('# 🔄 label')` + `airich.code(highlightJS(hasil), 'javascript')`, quote ke pesan.
+  - `stripLeadingCommand()` membuang prefix + nama command yang ikut tertempel di payload (mis. input `.tocjs .tocjs import ...`), maksimal 3 pengulangan, sebelum `stripFence`.
+  - `highlightJS()` memecah kode jadi blok bertipe (`COMMENT`/`STRING`/`NUMBER`/`KEYWORD`/`METHOD`/`DEFAULT`) supaya blok dirender sebagai kode JavaScript ber-highlight, bukan teks polos. Roundtrip teks dijamin utuh.
+  - `lib/airich.js` sekarang otomatis menyusun `unifiedResponse` dari submessage text/code (`GenAIMarkdownTextUXPrimitive` + `GenAICodeUXPrimitive`) dan plugin mengirim `contextInfo` forwarded seperti contoh. Tanpa keduanya, pesan AIRich tidak muncul di WhatsApp ("gamuncul").
+  - Fallback teks berkode kalau pengiriman AIRich gagal.
+  - `_test` mengekspor fungsi konversi untuk verifikasi manual.
+
+## Jebakan
+- **Tidak ada class `AIRich` di repo ini.** Padanannya builder `lib/airich.js` (`text`, `code`, `send`).
+- **`richResponseMessage` tanpa `unifiedResponse` (dan `contextInfo` forwarded) bisa di-drop client** — gejalanya command sukses tanpa error tapi tidak ada pesan masuk. `build()` sekarang mengisi `unifiedResponse` untuk text/code; tipe lain mengembalikan `null` dan mengandalkan submessage.
+- Repo ini CommonJS + loader format objek — jangan pakai `export default handler` seperti contoh bot asal.
+- `m.quoted` tidak punya `.text`; pakai `extractText` dari `lib/simple.js` (sudah menangani conversation/extended/caption/button).
+- Tidak ada sistem `limit` seperti bot asal, jadi `handler.limit` tidak dipakai.
+- Regex `module.exports`/`exports.*` hanya menangani satu baris; `module.exports = { ... }` multi-baris tidak dikonversi sempurna (mengikuti contoh).
+- Input lewat teks kehilangan indentasi karena handler menggabung argumen; reply blok kode lebih aman untuk kode panjang.
+- AIRich tidak selalu dirender semua client — fallback teks wajib ada.
+- **Prefix + command bisa ikut jadi isi `text` plugin.** Kalau pesan dikirim dobel (mis. `.tocjs .tocjs import ...`), `args`/`text` memuat sisa `.tocjs`; tanpa `stripLeadingCommand` sisa itu masuk ke kode hasil.
+- **`codeLanguage: 'javascript'` saja tidak cukup** — client merender blok sebagai teks polos kalau `codeBlocks` tidak diberi `highlightType`. Harus dipecah per token; `unifiedResponse` memetakan tipe ke `KEYWORD`/`DEFAULT`/`STR` (bukan `STRING`).
+
+## Verifikasi
+- `node --check plugins/toesm.js` → lolos.
+- CJS → ESM: `const { exec } = require('child_process')`, `const fs = require('fs')`, `module.exports = handler`, `exports.foo = 1` → `import { exec } …`, `import fs …`, `export default …`, `export const foo …`.
+- ESM → CJS: named/default/namespace import, `export default`, `export const` → `require`/`module.exports`/`exports.foo`.
+- Simulasi `run` dari reply dan teks → payload AIRich terkirim, decode 2 submessage tipe `2,5` dengan title `# 🔄 CJS → ESM` / `# 🔄 ESM → CJS` dan kode hasil konversi.
+- Decode payload: `contextInfo.isForwarded` true (`forwardOrigin` 4) dan `unifiedResponse` berisi 2 section — `GenAIMarkdownTextUXPrimitive` (judul) + `GenAICodeUXPrimitive` (`language: javascript`, blok kode hasil).
+- `stripLeadingCommand(".tocjs .tocjs import axios from 'axios';")` → `import axios from 'axios';`; lalu jadi `const axios = require('axios');`.
+- `highlightJS` roundtrip teks utuh, 8 blok bertipe `KEYWORD/DEFAULT/STRING`; submessage `codeLanguage: javascript` dengan 14 blok, `unifiedResponse` `KEYWORD,DEFAULT,STR`.
+
+---
+
+# FIX LOG - airich: helper + plugin demo richResponseMessage (2026-10-26)
+
+## Gejala / permintaan
+- Ternyata zapo-js mendukung `richResponseMessage` (AIRich). Contoh `BotForwardedMessage.js` menunjukkan kirim raw proto `conn.message.send(m.chat, { botForwardedMessage: { message: { richResponseMessage: { submessages } } } }, {})`.
+- Diminta dibuatkan helper + plugin demo supaya tidak menulis proto panjang manual.
+
+## Perubahan
+- `lib/airich.js` (baru): builder untuk **semua** submessage AIRich — `text()`, `code()` (string atau blok ber-highlight), `table()`, `image()` (alignment/tapLink), `gridImage()`, `dynamic()` (image/gif), `map()` (annotations), `latex()` + `latexExpression()`, `contentItems()` (reel/carousel). Plus `build()` dan `send(conn, chat, submessages, { quote, unifiedResponse, contextInfo })`.
+  - `unifiedResponse` menerima Buffer/Uint8Array atau object (di-JSON → Buffer).
+  - Konstanta: `T` (tipe submessage) dan `CODE` (highlightType).
+- `plugins/airich.js` (baru, owner-only, format objek): `.airich`/`.rich` mengirim payload **persis** dari `BotForwardedMessage.js` — bukan demo tiruan.
+  - `loadDemo()` membaca `data/BotForwardedMessage.js`, mengambil literal objek setelah `m.chat,`, lalu mengevaluasinya via `vm.runInNewContext` dengan sandbox `{ Buffer }` + timeout 2 dtk. `conn.message.send` di luar literal tidak ikut dieksekusi.
+  - Payload di-cache setelah load pertama; dikirim dengan opsi `{}` seperti contoh (tanpa quote).
+  - Kalau file hilang/struktur berubah, command balas error, bukan mengirim demo lain.
+  - Semua gambar contoh (`cdn.ornzora.eu.cc`) diganti `DEFAULT_IMAGE` → `https://svazer-upload.vercel.app/file/96943042.jpg`, termasuk URL yang tertanam di `messageText` dan di dalam JSON `unifiedResponse`. `.airich <url>` memakai URL gambar lain.
+- `lib/airich.js` tetap disimpan sebagai builder untuk komposisi manual (tidak dipakai plugin demo).
+- Tidak menyentuh `plugins/ai.js`.
+
+## Jebakan
+- **`data/BotForwardedMessage.js` adalah sumber konten demo** (603 KB, masuk `.gitignore` lewat `data/`). File ini tidak ikut repo — kalau hilang di deploy, `.airich` gagal. Salin manual ke `data/`.
+- Jangan pakai `new Function`/eval seluruh file: `conn.message.send` dan kode lain ikut jalan. Yang dievaluasi hanya literal objek payload, di sandbox tanpa `require`/`process`.
+- Ganti URL gambar dengan regex URL utuh, **bukan** replace prefix host — replace prefix akan menempelkan path lama di belakang URL baru.
+- Gambar juga ada di dalam `unifiedResponse.data` (JSON di Buffer), bukan cuma di `submessages`; kalau hanya submessage yang diganti, kartu/pill masih memakai gambar lama.
+- Bentuk wrapper harus `botForwardedMessage.message.richResponseMessage`; zapo membuka wrapper itu saat resolve tipe pesan (`dist/message/encode/content.js`), jadi pesan dikirim sebagai TEXT.
+- `proto.Message.encode(raw)` mengembalikan writer — pakai `.finish()` untuk bytes.
+- `contextInfo` di contoh ada **di dalam** `richResponseMessage`, bukan di wrapper.
+- `unifiedResponse.data` bertipe bytes (JSON GenAI view-model ±457 KB). Inilah yang membuat tampilan contoh punya pill/produk/search/imagine/reels; kalau dihapus, tampilannya berubah.
+- Enum penting: submessage `1..9` = grid image, text, inline image, table, code, dynamic, map, latex, content items; `dynamic.type` 1=image, 2=gif; `contentType` 1=carousel.
+- Raw proto = jalur "advanced" seperti `crm`: plugin dibuat owner-only.
+- **Hot reload hanya menghapus cache file plugin**, bukan `lib/`. Setelah mengubah `lib/airich.js`, plugin yang sudah ter-load masih memakai versi lama — wajib restart bot.
+
+## Verifikasi
+- `node --check lib/airich.js` dan `node --check plugins/airich.js` → lolos.
+- Payload dari plugin di-encode ulang: 459347 byte, **16 submessage** dengan urutan tipe `2,2,2,2,2,2,2,2,5,4,2,1,2,2,9,2`, `unifiedResponse.data` 456882 byte, `contextInfo` forwarded score 1 origin 4 — identik dengan `BotForwardedMessage.js`.
+- Setelah penggantian gambar: 0 sisa `cdn.ornzora.eu.cc` (di submessages maupun JSON unified), 14 URL gambar baru di submessages dan 37 di unifiedResponse; grid image, thumbnail/ikon reel, dan URL LaTeX di `messageText` terkonfirmasi memakai URL baru. Link non-gambar (google, openai, wa.me, github, fiora) tetap.
+- JSON `unifiedResponse` tetap valid setelah replace (17 section, `response_id` utuh).
+
+---
+
 # FIX LOG - upload CDN pindah ke svazer-upload.vercel.app (2026-10-26)
 
 ## Gejala / root cause
