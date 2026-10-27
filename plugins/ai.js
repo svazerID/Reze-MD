@@ -1,4 +1,4 @@
-const API_URL = 'https://ai.alfisy.my.id/api/chat'
+const API_URL = 'https://aiold.vercel.app/api/chat'
 const MODEL = 'qwen'
 const { downloadMedia } = require('../lib/mediaProcessor')
 

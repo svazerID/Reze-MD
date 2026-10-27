@@ -1,3 +1,23 @@
+# FIX LOG - ai: ganti endpoint ke aiold.vercel.app (2026-10-27)
+
+## Gejala / permintaan
+- Domain `ai.alfisy.my.id` diganti ke `aiold.vercel.app`.
+
+## Perubahan
+- `plugins/ai.js`: `API_URL` jadi `https://aiold.vercel.app/api/chat`. Payload, model, dan sessionId tidak berubah.
+- Referensi "alfisy" lain di `plugins/play.js`, `plugins/translate.js`, `lib/translate.js` adalah API search/translate yang berbeda — tidak ikut diubah.
+- Entri FIX_LOG lama yang menyebut domain lama dibiarkan sebagai catatan historis.
+
+## Jebakan
+- Plugin cuma butuh response `{ reply, sessionId?, error? }`; kalau endpoint baru beda skema, sesuaikan di `plugins/ai.js`.
+
+## Verifikasi
+- `node --check plugins/ai.js` lolos, bot hot-reload `ai.js` tanpa error.
+- `GET https://aiold.vercel.app/` → 200.
+- `POST https://aiold.vercel.app/api/chat` dengan `{"message":"ping","model":"qwen"}` → `{"reply":"pong","sessionId":"..."}` HTTP 200.
+
+---
+
 # FIX LOG - airich: payload demo ditanam di plugin, tidak baca data/ (2026-10-27)
 
 ## Gejala / permintaan
