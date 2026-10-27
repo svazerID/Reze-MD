@@ -1,3 +1,30 @@
+# FIX LOG - drive: tidak kirim ulang media, cuma link (anti-timeout) (2026-10-27)
+
+## Gejala / permintaan
+- `.drive` sering timeout: setelah upload Drive selesai, bot masih mengirim ulang file-nya ke WhatsApp (video/sticker/dokumen gede) — upload kedua itu yang bikin lama/timeout.
+- Diminta: jangan kirim media lagi, cukup kirim link Drive-nya.
+
+## Perubahan
+- `plugins/send.js`: `sendBuffer()` tidak lagi memanggil `conn.message.send` dengan `media`. Setelah upload, yang dikirim hanya teks (nama file, ukuran, link, sumber Drive/CDN).
+- Upload Drive tetap prioritas; CDN cadangan tetap ada. Kalau **dua-duanya** gagal, tidak ada media yang dikirim — cuma pesan `❌ Gagal upload ...` supaya user tahu.
+- `sendBuffer()` menerima `usedPrefix`/`command` dari `run` untuk pesan gagal (`kirim ulang media tanpa .drive`).
+- `sendTypeFor()`/`typeFromMime()` tidak dihapus: masih dipakai untuk label tipe di log (`send: video -> link Drive untuk ...`).
+- File: byte NUL liar di baris 82 (`regex /[\0-\x1f]/`) dibuang sehingga file jadi UTF-8 valid. Itu penyebab indexer CBM menandai `parse_partial 82-82` dan `read` menolak file sebagai binary.
+
+## Jebakan
+- `lib/drive.js` mengembalikan `null` (bukan throw) kalau credential Google tidak ada — karena itu pengecekan `if (!url)` wajib setelah fallback CDN, bukan hanya lewat `catch`.
+- Jangan hidupkan lagi `conn.message.send` berisi `media` di `sendBuffer`: itu satu-satunya sumber timeout yang dikeluhkan.
+- Variabel `conn` masih ada di signature `sendBuffer` (dipakai konsisten dengan pemanggil) tapi tidak dipakai untuk kirim media.
+
+## Verifikasi
+- `node --check plugins/send.js` lolos.
+- Uji `run` dengan conn tiruan (`conn.message.send` sengaja `throw` kalau terpanggil) + mock `lib/drive.js`:
+  - Drive sukses → output hanya 4 baris teks: nama file, ukuran, link `drive.google.com/file/d/ABC123/view`, `_via Drive_`. `conn.message.send` tidak terpanggil.
+  - Drive throw + CDN mati → output `❌ Gagal upload sendfixture.txt (0.0 KB)` + hint, tanpa media.
+- Belum diuji ke WhatsApp asli (butuh device + credential Drive produksi).
+
+---
+
 # FIX LOG - ai: ganti endpoint ke aiold.vercel.app (2026-10-27)
 
 ## Gejala / permintaan
