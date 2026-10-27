@@ -1,3 +1,26 @@
+# FIX LOG - airich: payload demo ditanam di plugin, tidak baca data/ (2026-10-27)
+
+## Gejala / permintaan
+- `.airich` bergantung pada `data/BotForwardedMessage.js` (603 KB, gitignored). Kalau file itu tidak ada di deploy, command gagal.
+- Diminta menggabungkan isi file itu ke `airich.js` dan tidak lagi membaca folder `data/`.
+
+## Perubahan
+- `plugins/airich.js`: literal payload `botForwardedMessage` dari `data/BotForwardedMessage.js` ditanam sebagai `const DEMO = { ... }` di dalam plugin; `loadDemo()`, `require('fs')`, `require('path')`, `require('vm')`, dan konstanta `EXAMPLE` dihapus.
+- Handler langsung memakai `DEMO` (masih di-clone lewat `swapImages`), jadi tidak ada I/O file saat command jalan.
+
+## Jebakan
+- Payload berisi `Buffer.from(..., 'base64')`; dulu dievaluasi di sandbox `vm` dengan `Buffer`. Setelah ditanam, `Buffer` dipakai dari global — aman karena literal tidak memuat `require`/`process`/`eval`.
+- Ukuran `plugins/airich.js` jadi ~618 KB; hot-reload akan parse ulang file ini setiap berubah.
+- `data/BotForwardedMessage.js` dibiarkan di disk (gitignored) tapi sudah tidak dipakai; aman dihapus manual kalau mau.
+
+## Verifikasi
+- `node --check plugins/airich.js` lolos.
+- Uji `run` dengan conn tiruan: 16 submessage, `unifiedResponse.data` Buffer 456 KB, URL default (`svazer-upload.../96943042.jpg`) masuk, tidak ada `cdn.ornzora.eu.cc` tersisa di submessage maupun JSON.
+- Uji argumen URL kustom → gambar diganti `https://example.com/a.png`, tidak ada ornzora tersisa.
+- Log bot: `♻️ Reload plugin 'airich.js'` tanpa error.
+
+---
+
 # FIX LOG - drive: upload Google Drive selalu "fetch failed" (2026-10-27)
 
 ## Gejala
