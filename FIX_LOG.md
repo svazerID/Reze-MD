@@ -6,7 +6,9 @@
 
 ## Perubahan
 - `plugins/tozapo.js` baru, command `.tozapo` (tag `tools`). Input dari `text` atau reply (`extractText`), hasil dikirim lewat AIRich (`airich.text` + `airich.code` + `highlightJS`), fallback ke fenced code saat AIRich gagal — pola sama dengan `plugins/toesm.js`.
-- Konversi pasti: `makeWASocket` → `new WaClient`, `sendMessage(jid, { text })` → `client.message.send(jid, 'x')`, `sendMessage` media (`image/video/audio/document/sticker`) → payload `{ type, media }`, `ev.on('messages.upsert')` → `client.on('message')`, `ev.on('connection.update')` → `client.on('connection')`.
+- Konversi pasti: `makeWASocket` → `new WaClient`, `sendMessage(jid, { text })` → `conn.message.send(jid, 'x')`, `sendMessage` media (`image/video/audio/document/sticker`) → payload `{ type, media }`, `ev.on('messages.upsert')` → `conn.on('message')`, `ev.on('connection.update')` → `conn.on('connection')`.
+- **Nama variabel hasil = `conn`, bukan `client`.** Project ini mengirim connector ke plugin sebagai `conn` (`handler.js`: `conn: this`), dan plugin lain memanggil `conn.message.send(...)` (mis. `plugins/brat.js`). Konstanta `OUT = 'conn'` di plugin supaya kalau suatu saat project ganti nama, cukup ubah satu tempat.
+- Nama variabel input Baileys yang dikenali: `sock`, `conn`, `wa`, `client`.
 - Pola tak didukung (`useMultiFileAuthState`, `creds.update`, `groupMetadata`, `downloadMediaMessage`, `sendPresenceUpdate`, `getContentType`, `messages[n]`, `msg.key.remoteJid`, `relayMessage`, `profilePictureUrl`) dibiarkan utuh dan ditandai `// TODO(zapo): <alasan>`, dirangkum di bawah blok kode.
 - `stripPrefix` menangani payload chat yang ikut menempel prefix + nama command berulang (`.tozapo .tozapo ...`).
 - Driver test inline: `node plugins/tozapo.js --test` (9 kasus, tanpa test framework).
@@ -23,8 +25,8 @@
 - `node --check plugins/tozapo.js` lolos.
 - `node plugins/tozapo.js --test` → 9/9 lolos.
 - Uji `run` dengan `conn` tiruan (AIRich sengaja gagal untuk memicu fallback):
-  - Snippet CJS (`useMultiFileAuthState` + `messages.upsert` + `sendMessage` text) → `new WaClient(`, `client.on('message', ...)`, `client.message.send(...)`, 2 TODO, indentasi utuh.
-  - Payload `.tozapo .tozapo await sock.sendMessage(jid, { text: 'halo' })` → `client.message.send(jid, 'halo')` (prefix ganda bersih).
+  - Snippet CJS (`useMultiFileAuthState` + `messages.upsert` + `sendMessage` text) → `new WaClient(`, `conn.on('message', ...)`, `conn.message.send(...)`, 2 TODO, indentasi utuh.
+  - Payload `.tozapo .tozapo await sock.sendMessage(jid, { text: 'halo' })` → `conn.message.send(jid, 'halo')` (prefix ganda bersih).
   - Input kosong → `❌ Masukkan atau reply kode Baileys yang ingin diubah.`
 - Belum diuji ke WhatsApp asli.
 
