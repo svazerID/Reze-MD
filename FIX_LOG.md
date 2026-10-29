@@ -1,3 +1,34 @@
+# FIX LOG - play: buang VidsSave, pakai API downloader Svazer (2026-10-29)
+
+## Gejala / permintaan
+- VidsSave (`vidssave-plugin.js` + `lib/vidsaveFetch.js` + rotasi proxy) sudah tidak dipakai; diminta diganti API `https://download.svazer.us.ci`.
+- Untung sampingan: VidsSave butuh proxy karena Cloudflare memblokir IP datacenter. API baru tidak butuh proxy maupun API key — servernya yang menjalankan yt-dlp.
+
+## Perubahan
+- `lib/svazerDl.js` baru: `info(url)` untuk metadata cepat (cek URL didukung tanpa mengunduh), `download(url, {format, quality})` untuk minta server mengunduh lalu mengembalikan `download_url`. `MAX_DURATION = 1200` (batas server, 413 kalau lewat) diekspor supaya pesan error memakai angka yang sama.
+- `plugins/play.js`: cadangan `downloadAudio()` sekarang `svazer.download(url, { format: 'mp3' })` → `download()` → `toMp3()`. `via` jadi `'svazer-api'`.
+- Dihapus: `vidssave-plugin.js` (command `!vidssave`/`!vs`/`!vsdl`), `lib/vidsaveFetch.js`, fungsi `pickAudio()` (dead code setelah cadangan diganti), dan semua komentar yang menyebut VidsSave di `play.js`.
+- `lib/proxyPool.js` **dipertahankan** karena `lib/translate.js` masih memakainya untuk translate.googleapis.com.
+
+## Jebakan
+- `/download` bisa 10–90 detik; timeout diset 150 detik. Jangan turunkan ke timeout fetch default.
+- `413` = durasi melebihi batas server, bukan error jaringan. Ditandai `tooLong: true` supaya pesan ke user akurat ("durasi melebihi batas 20 menit"), bukan "API gagal".
+- Respons error bisa `{"detail": "..."}` (string) atau list validasi. `detailOf()` menangani dua-duanya.
+- Link file kedaluwarsa (`expires_in`, default 3600 detik) — jangan disimpan untuk dipakai nanti.
+- Download file pakai `fetch` biasa (tanpa proxy). Jangan tambahkan proxy: tidak ada Cloudflare yang memblokir di API ini.
+
+## Verifikasi
+- `node --check plugins/play.js` dan `node --check lib/svazerDl.js` lolos.
+- `GET /health` → `{"status":"ok","yt_dlp":"2026.10.26"}`.
+- `svazer.info('https://youtu.be/dQw4w9WgXcQ')` → `ok:true`, title, duration 213, extractor Youtube.
+- `svazer.info('https://contoh.invalid/video')` → `ok:false` + pesan DNS (bukan crash).
+- `svazer.download(url, {format:'mp3'})` → `ok:true`, `ext:mp3`, `size_mb:4.88`, `expires_in:3600`; fetch `download_url` → HTTP 200, 5.114.349 byte, magic `494433` (ID3 = mp3 asli).
+- Rantai penuh (download → buffer → `toMp3` ffmpeg) → 5.047.437 byte, magic `494433`.
+- Bot hot-reload, `play.js` masih ada di daftar `📦 Plugin dimuat`.
+- Belum diuji `.play` lewat WhatsApp asli.
+
+---
+
 # FIX LOG - tozapo: plugin convert kode Baileys ke zapo (2026-10-27)
 
 ## Gejala / permintaan

@@ -1,14 +1,14 @@
 let fs = require('fs')
 let path = require('path')
 let { execFile } = require('child_process')
-let { scrapeVidsSave } = require('../vidssave-plugin')
-let { downloadVia } = require('../lib/vidsaveFetch')
+let svazer = require('../lib/svazerDl')
 let sharp = require('sharp')
 let { execFile: execFileCb } = require('child_process')
 
-// VidsSave menyajikan audio sebagai WebM/Opus atau M4A, BUKAN mp3. Kalau buffer
-// mentahnya ditulis dengan ekstensi .mp3, WhatsApp bisa menolak atau memutar
-// durasi salah. Konversi dulu lewat ffmpeg supaya benar-benar mp3.
+// Sumber cadangan (API downloader) bisa menyajikan audio sebagai WebM/Opus atau
+// M4A, BUKAN mp3. Kalau buffer mentahnya ditulis dengan ekstensi .mp3, WhatsApp
+// bisa menolak atau memutar durasi salah. Konversi dulu lewat ffmpeg supaya
+// benar-benar mp3.
 function toMp3(buffer, outBase) {
   let raw = outBase + '.raw'
   let mp3 = outBase + '.mp3'
@@ -37,10 +37,9 @@ if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true })
 let SEARCH_API = 'https://alsya.svazer.eu.cc/api/search/yts'
 let SEARCH_TIMEOUT_MS = 25_000
 
-// Download audio lewat VidsSave (scraper di vidssave-plugin.js).
-// CATATAN: VidsSave nolak IP datacenter dengan status_code 'analyze_risk'
-// (lihat FIX_LOG). Dari Termux/IP residential lolos. Kalau kena analyze_risk,
-// tidak ada retry yang menolong - pesan errornya harus jelas ke user.
+// Download audio: yt-dlp lokal, dengan API downloader Svazer sebagai cadangan
+// (lib/svazerDl.js). API itu tidak butuh proxy maupun API key - servernya yang
+// menjalankan yt-dlp, bot cuma mengambil link filenya.
 let UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
 
 // Cookie YouTube: wajib di host ini. Tanpa cookie, IP datacenter langsung kena
@@ -134,18 +133,6 @@ async function searchYoutube(query) {
   }
 }
 
-// Ambil resource audio terbaik dari hasil VidsSave. Kualitas '128kbps' > '64kbps'.
-function pickAudio(resources) {
-  let pool = (resources || []).filter(r => /audio/i.test(r.type || '') && r.download_url)
-  if (!pool.length) return null
-  pool.sort((a, b) => {
-    let qa = parseInt(String(a.quality || ''), 10) || 0
-    let qb = parseInt(String(b.quality || ''), 10) || 0
-    return qb - qa || (b.size || 0) - (a.size || 0)
-  })
-  return pool[0]
-}
-
 function runCurlOnce(url, outFile, timeoutSec) {
   return new Promise((resolve, reject) => {
     execFile(
@@ -225,10 +212,10 @@ async function download(url, { retries = 3 } = {}) {
   }
 }
 
-// Download audio. Urutan: yt-dlp dulu, VidsSave+proxy sebagai cadangan.
+// Download audio. Urutan: yt-dlp dulu, API downloader Svazer sebagai cadangan.
 //
-// yt-dlp didahulukan karena dua alasan: (1) jauh lebih cepat - diukur ~29 MB/s
-// vs 0.3-0.7 MB/s lewat proxy gratis, (2) tidak lewat relay pihak ketiga.
+// yt-dlp didahulukan karena dua alasan: (1) lebih cepat - tidak ada upload ulang
+// ke server pihak ketiga, (2) file langsung ada di disk, tanpa download dobel.
 // Syaratnya cookie akun YouTube (.yt-cookies.txt) + JS runtime: tanpa cookie
 // kena bot-check, tanpa JS runtime format streaming disembunyikan YouTube.
 async function downloadAudio(info, base) {
@@ -249,49 +236,32 @@ async function downloadAudio(info, base) {
     ytdlpErr = e
   }
 
-  // yt-dlp gagal (cookie kedaluwarsa / diblokir) -> VidsSave lewat rotasi proxy.
-  let parsed
-  try {
-    parsed = await scrapeVidsSave(info.url)
-  } catch (e) {
-    parsed = { status: false, message: e.message || String(e) }
-  }
+  // yt-dlp gagal (cookie kedaluwarsa / diblokir) -> API downloader Svazer.
+  // Server yang mengunduh (yt-dlp di sisi mereka), bot cuma mengambil file.
+  let api = await svazer.download(info.url, { format: 'mp3' })
 
-  if (parsed.status) {
-    let best = pickAudio(parsed.resources)
-    if (best) {
-      if (best.size && best.size > 60 * 1024 * 1024) {
-        // Hasil pencarian teratas bisa berupa kompilasi berjam-jam (mis. "lofi
-        // hip hop" -> video 6 jam, audio 380MB). Bukan error sistem: user cukup
-        // diminta memakai judul yang lebih spesifik.
-        throw new Error(
-          `hasil teratas ${Math.round(best.size / 1024 / 1024)}MB ` +
-          `(${Math.round((info.duration || 0) / 60)} menit) kegedean buat WA - ` +
-          `coba judul yang lebih spesifik (tambah nama artis atau kata "official")`
-        )
-      }
-      // Kalau parse-nya butuh proxy, CDN download-nya kemungkinan besar juga
-      // memblokir IP kita -> pakai proxy yang sama. Kalau parse langsung
-      // berhasil (IP residential), download langsung saja.
-      let buf = parsed.viaProxy
-        ? await downloadVia(best.download_url, parsed.viaProxy)
-        : await download(best.download_url)
-      if (!buf.length) throw new Error('file kosong dari VidsSave')
-      let f = await toMp3(buf, base)
-      return { file: f, via: parsed.viaProxy ? 'vidssave-proxy' : 'vidssave', quality: best.quality }
+  if (api.ok) {
+    if (api.size && api.size > 60 * 1024 * 1024) {
+      // Hasil pencarian teratas bisa berupa kompilasi berjam-jam (mis. "lofi
+      // hip hop" -> video 6 jam, audio 380MB). Bukan error sistem: user cukup
+      // diminta memakai judul yang lebih spesifik.
+      throw new Error(
+        `hasil teratas ${Math.round(api.size / 1024 / 1024)}MB ` +
+        `(${Math.round((info.duration || 0) / 60)} menit) kegedean buat WA - ` +
+        `coba judul yang lebih spesifik (tambah nama artis atau kata "official")`
+      )
     }
+    let buf = await download(api.url)
+    if (!buf.length) throw new Error('file kosong dari API downloader')
+    let f = await toMp3(buf, base)
+    return { file: f, via: 'svazer-api', quality: null }
   }
 
-  // yt-dlp dan VidsSave dua-duanya gagal -> sebutkan keduanya, jangan cuma
-  // yang terakhir, supaya jelas ini bukan satu jalur yang bermasalah.
-  let alasan
-  if (parsed.status) {
-    alasan = 'VidsSave tidak menyediakan audio'
-  } else if (parsed.raw?.status_code === 'analyze_risk') {
-    alasan = 'VidsSave menolak semua proxy yang tersedia (analyze_risk)'
-  } else {
-    alasan = parsed.message || 'VidsSave gagal'
-  }
+  // yt-dlp dan API dua-duanya gagal -> sebutkan keduanya, jangan cuma yang
+  // terakhir, supaya jelas ini bukan satu jalur yang bermasalah.
+  let alasan = api.tooLong
+    ? `durasi melebihi batas server (${svazer.MAX_DURATION / 60} menit)`
+    : (api.message || 'API downloader gagal')
   throw new Error(`yt-dlp: ${ytdlpErr?.message || 'gagal'} | ${alasan}`)
 }
 
