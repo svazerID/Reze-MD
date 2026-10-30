@@ -1,3 +1,44 @@
+# FIX LOG - editimg: edit gambar lewat AI img2img (2026-10-30)
+
+## Fitur
+- Command `.editimg <prompt>` — ubah gambar jadi gaya baru lewat `POST https://aiold.vercel.app/api/img2img` (multipart: `image`, `prompt`, `model`).
+- Input gambar boleh reply (seperti `.ai`) atau kirim gambar dengan caption. Prompt WAJIB, tidak ada prompt default.
+- Model tunggal `Flux_2_Klein_4B_BF16` (server tidak memvalidasi model, jadi belum ada gunanya membuka pilihan lain).
+- Satu file saja: `plugins/editimg.js` — klien API, resize, dan retry semuanya fungsi lokal. Tidak ada `lib/img2img.js` (permintaan user).
+
+## Kenapa retry ada
+- Rate limit API ini **bersama** (semua pemakai API itu) dan saat kena, API menolak dalam ~0.5 detik — tidak mengantre. Diukur: masih penuh setelah 30 detik, pulih setelah ~90 detik, pernah juga penuh >4 menit saat ramai.
+- Plugin mencoba ulang maks 2x (jeda 15 dtk, 25 dtk, total ~40 dtk). Hanya kondisi `Too Many Attempts` dan timeout jaringan yang di-retry; error lain tidak (percuma).
+
+## Tidak ada state (permintaan user)
+- Gambar & prompt hanya hidup selama satu pemanggilan `run`. Tidak ditulis ke `global.db` (user: "jangan simpan di db"), dan **tidak** dialihkan ke cache `tmp/` — file di sana tetap data user yang menumpuk tanpa masa kedaluwarsa, jadi cuma memindahkan masalah.
+- Konsekuensi yang disengaja: kalau setelah retry masih penuh, user harus kirim ulang gambar + prompt. Pesannya jujur menyebut ini, bukan menyiratkan bot akan mengulang nanti.
+
+## Jebakan
+- **Server membalas status yang tidak konsisten.** Prompt kosong pernah `400 {"error":"Prompt wajib disediakan"}` (Indonesia), lalu berubah jadi `500 {"error":"Gagal transform image: The prompt field is required."}` (Inggris). Karena itu klasifikasi `busy` **diturunkan dari isi pesan** (`/Too Many Attempts/i`), bukan dari status HTTP. Jangan "perbaiki" jadi cek status.
+- API mengembalikan **link** (`imageUrl`), bukan file. Hasil harus di-fetch sekali lagi. Link pakai signed URL (S3), ada masa berlaku.
+- Hasil selalu PNG 1024x1024 (±2 MB) — aman untuk WA, tidak perlu resize hasil.
+- Input di-resize ke sisi terpanjang 2048px sebelum upload. Gagal resize → pakai buffer asli, jangan gagalkan edit.
+- `require('config')` memasang setInterval; blok `--test` sengaja tidak memuatnya dan memanggil `process.exit(0)`.
+- Plugin pakai **format object** (`run`), bukan format function lama — `normalizePlugin` di main.js mewajibkannya untuk plugin baru. Sempat tertulis sebagai `let handler = async` dan `run` jadi `undefined`.
+
+## Verifikasi
+- `node --check plugins/editimg.js` lolos; `module.exports` punya `name`, `run`, `command: /^editimg$/i`.
+- `node plugins/editimg.js --test` → **9/9 lolos** (termasuk dua uji jaringan nyata):
+  - `isBusy` menandai rate limit, bukan error lain.
+  - Retry berhenti setelah maks 3 percobaan; error non-busy tidak di-retry; retry berhasil di percobaan kedua.
+  - API asli: prompt kosong ditolak server.
+  - API asli: edit sukses → `imageUrl` di-fetch → magic bytes `89504e47` (PNG asli).
+  - Jalur `run` dengan `conn` tiruan: tanpa gambar → instruksi; gambar tanpa prompt → minta prompt (tidak mengarang); reply berisi dokumen → tidak dianggap gambar.
+- Uji awal via curl: respons `{"success":true,"imageUrl":"..."}` dalam 8.7 dtk, hasil 2.08 MB PNG 1024x1024.
+- Bot hot-reload `editimg.js` tanpa error di log pm2.
+- Belum diuji `.editimg` lewat WhatsApp asli (butuh device).
+
+## Uji yang jujur, bukan yang lolos diam-diam
+- Dua uji jaringan di blok `--test` sengaja **gagal** kalau server sedang penuh, bukan dilewati. Selama ±1 jam API ramai, test memang merah — dan itu benar, karena jalur edit belum terbukti. Baru setelah API pulih, keduanya hijau.
+
+---
+
 # FIX LOG - play: buang VidsSave, pakai API downloader Svazer (2026-10-29)
 
 ## Gejala / permintaan
