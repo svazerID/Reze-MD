@@ -1,3 +1,50 @@
+# FIX LOG - yts/ytsearch: cari YouTube lewat tombol interaktif (2026-10-31)
+
+## Fitur
+- Command baru `.yts <kueri>` (alias `ytsearch`) memakai `https://alsya.svazer.eu.cc/api/search/yts?q=`.
+- Hasil dikirim sebagai `interactiveMessage`: kartu berisi judul/link/durasi/upload/views, tombol **📹 Video** dan **🎧 Audio**, tombol **Berikutnya ➡️**, dan daftar `single_select` 10 hasil.
+- Klik tombol = pesan biasa berisi id. `extractText` di `lib/simple.js` mengembalikan `nativeFlowResponseMessage.paramsJson.id` (quick_reply) atau `listResponseMessage.singleSelectReply.selectedRowId` (list), jadi id cukup ditulis sebagai command: `.ytmp4 <url>` / `.ytmp3 <url>` / `.yts -p2 <kueri>`.
+- Satu file `plugins/ytsearch.js`; tidak ada lib baru.
+
+## Kenapa pakai cache memori (temuan penting)
+API pencarian ini **tidak bisa diandalkan untuk navigasi berbasis nomor**. Diukur 2026-10-31, kueri `multo`, 5 panggilan berturut-turut:
+- jumlah hasil selalu **19**, tidak ada duplikat dalam satu panggilan;
+- **urutan berubah** (posisi 2 dan 3 pernah tertukar);
+- **isi berubah** (18 dari 19 sama; satu video bisa muncul/hilang antar panggilan);
+- parameter `page`, `offset`, `p`, `start` **diabaikan server** — selalu 19 hasil.
+
+Kalau tombol "Berikutnya" mengambil ulang hasil saat diklik, user bisa menekan satu judul lalu mendapat video lain. Jadi 19 hasil pertama disimpan **di memori per chat** (`Map`, TTL 5 menit, maks 200 entri, eviksi FIFO). Ini bukan database: tidak ada tulisan ke disk, hilang saat bot restart, dan isinya cuma hasil pencarian publik.
+
+Konsekuensi yang disengaja: kalau cache sudah kedaluwarsa lalu user menekan `-pN`, bot mengambil ulang dan nomor halaman bisa bergeser — bot mengirim satu pesan info supaya user tidak mengira tombolnya rusak.
+
+## Sintaks halaman
+- `.yts multo` → hasil #1.
+- `.yts -p2 multo` → hasil #2 (dipakai tombol).
+- Angka telanjang di akhir **bukan** halaman: `blink 182` dan `multo 2` tetap dianggap kueri utuh. Alasannya keduanya judul lagu yang sah; kalau angka di akhir selalu jadi halaman, pencarian itu mustahil.
+
+## Jebakan
+- **Jangan ganti cache jadi fetch ulang.** Urutan/isi API berubah antar panggilan; navigasi nomor jadi tidak bisa dipercaya (lihat angka di atas).
+- Jendela 10 baris diambil di sekitar halaman sekarang (`rowWindow`), bukan selalu dari #1, supaya user tidak perlu maju satu-satu.
+- Hasil terakhir tidak punya "Berikutnya" — diganti "⬅️ Sebelumnya" supaya user tidak terjebak di ujung daftar. `-p99` di-clamp ke hasil terakhir, tidak error.
+- `footer` pakai `global.packname || 'Reze-MD'`; tanpa fallback, memanggil plugin di luar bot menghasilkan `{ text: undefined }`.
+- `views` dari API berbentuk `"249,678,219 views"`; yang dikirim cuma angkanya (`viewsNumber`), sesuai contoh.
+- `contextInfo` sengaja ditulis langsung di dalam proto `interactiveMessage` (bukan lewat opsi `contextInfo` zapo) supaya bentuknya persis contoh user: `mentionedJid` (singular), `groupMentions`, `statusAttributions`, `forwardOrigin`.
+
+## Verifikasi
+- `node --check plugins/ytsearch.js` lolos; bot memuat plugin tanpa error di log pm2.
+- `node plugins/ytsearch.js --test` → **13/13 lolos** (tanpa jaringan): parsing `-pN` vs angka di kueri, `viewsNumber`, `ytUrl`, `cardText`, `rowWindow` (halaman 1, tengah, terakhir, hasil sedikit), cache (simpan/ambil/kedaluwarsa/eviksi FIFO).
+- Uji nyata `run` dengan `conn` tiruan, kueri `multo`:
+  - kartu `~> *Multo (Live at The Cozy Cove) - Cup of Joe*`, link, durasi, upload, views `172039723`;
+  - 4 tombol: 2 quick_reply (`📹 Video`, `🎧 Audio`) + `Berikutnya ➡️` + `single_select` 10 baris;
+  - `messageParamsJson` berisi `bottom_sheet` (`list_title: Hasil Pencarian`, `button_title: Opsi Video`);
+  - `.yts -p2 multo` memakai cache (tanpa ambil ulang) dan menampilkan hasil #2;
+  - `.yts -p19 multo` → tombol `⬅️ Sebelumnya`; `-p99` di-clamp; kueri kosong → instruksi;
+  - `blink 182` dicari sebagai kueri, bukan halaman;
+  - semua id tombol terverifikasi sebagai command yang sah (`ytmp4`, `ytmp3`, `yts`).
+- Belum diuji lewat WhatsApp asli (butuh device) — terutama tampilan bottom sheet 4 tombol.
+
+---
+
 # FIX LOG - ytmp3/ytmp4: download YouTube lewat API Svazer (2026-10-30)
 
 ## Fitur
