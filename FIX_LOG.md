@@ -1,3 +1,39 @@
+# FIX LOG - ytmp3/ytmp4: download YouTube lewat API Svazer (2026-10-30)
+
+## Fitur
+- Command baru `.ytmp3 <url>` (audio mp3) dan `.ytmp4 [kualitas] <url>` (video mp4, kualitas 1080/720/480/360, default 720). Alias: `yta`, `ytv`, `ytaudio`, `ytvideo`.
+- Satu file `plugins/ytmp.js`, memakai `lib/svazerDl.js` yang sudah ada.
+- URL boleh dari argumen atau dari teks pesan yang di-reply. Kualitas bisa sebelum atau sesudah URL.
+
+## Perbedaan dengan `.play`
+- `.play` mencari judul di YouTube lalu menjalankan yt-dlp **lokal** (butuh cookie + JS runtime), API Svazer cuma cadangan.
+- `.ytmp3`/`.ytmp4` **selalu** lewat API Svazer: server yang menjalankan yt-dlp, bot cuma mengambil link filenya. Jadi tidak butuh cookie maupun proxy. Bedanya juga: `.play` menerima judul lagu, `.ytmp*` butuh link.
+
+## Kualitas & batas ukuran (alasannya, bukan tebakan)
+- WhatsApp menolak video di atas ±64 MB. Diukur 2026-10-30 pada video uji 3:44: `mp4 best` = **43.81 MB**, `1080` = 18.77 MB, `720` = **11.86 MB**, `mp3 best` = 5.13 MB. Jadi `best` gampang lewat batas untuk video yang lebih panjang.
+- Karena itu default `720`, dan kalau hasilnya tetap >60 MB bot **turun kualitas sendiri** (1080→480→360) lalu memberi tahu user kualitas akhirnya. Tangga 1080→480 (bukan 1080→720) karena beda 720/1080 jarang menyelamatkan ukuran, jadi tidak perlu dicoba satu-satu.
+- Kalau di kualitas terendah masih kegedean, bot gagal dengan pesan jelas — bukan mengirim video yang akan ditolak WhatsApp.
+
+## Jebakan
+- `mp4 best` bukan pilihan yang aman dijadikan default; lihat angka di atas.
+- Nama file dari server dipertahankan di respons API, tapi bot sengaja menulis file sendiri di `tmp/` dengan nama aman (`ytmp_<ts>_<rand>.<ext>`) supaya tidak ada nama file aneh dari pihak ketiga yang masuk ke disk.
+- File sementara dihapus di `finally`; kalau `conn.message.send` gagal, file tetap dibersihkan.
+- Server membatasi durasi 20 menit (`MAX_DURATION` di `lib/svazerDl.js`); lewat itu dibalas 413 dan ditandai `tooLong` supaya pesan ke user akurat.
+
+## Verifikasi
+- `node --check plugins/ytmp.js` lolos; plugin termuat bot tanpa error (log pm2), tidak ada "format tidak dikenali".
+- `node plugins/ytmp.js --test` → **11/11 lolos** (tanpa jaringan): parsing kualitas+URL (kualitas sebelum/sesudah URL), URL dari teks reply, `videoChain`, `fmtDuration`, deteksi link YouTube.
+  - Auto-turun diuji dengan injeksi fungsi unduh tiruan: 1080 120 MB → jatuh ke 480 (20 MB) dan `downgradedFrom` terisi; semua kualitas kegedean → gagal dengan pesan "kualitas terendah"; ukuran pas → tidak turun.
+- Uji nyata `run` dengan `conn` tiruan, URL `https://youtube.com/watch?v=YrtS8MESh0I`:
+  - `.ytmp4 720` → video **12.433.848 byte** (persis 11.86 MB dari API), header `ftyp` di byte 4-8 = MP4 asli, caption `🎵 Runtuh… ⏱️ 3:44 📺 720p`.
+  - `.ytmp3` → audio **5.377.005 byte** (5.13 MB), header `ID3` di byte 0-3 = MP3 asli.
+  - Tanpa URL → instruksi; link bukan YouTube → error jelas; URL dari teks reply → jalan.
+  - `tmp/` bersih setelah semua pengiriman.
+- `svazer.download(1080)` untuk video uji = 18.77 MB (di bawah batas, jadi tidak turun kualitas).
+- Belum diuji `.ytmp3`/`.ytmp4` lewat WhatsApp asli (butuh device).
+
+---
+
 # FIX LOG - editimg: edit gambar lewat AI img2img (2026-10-30)
 
 ## Fitur
